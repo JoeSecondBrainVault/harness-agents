@@ -73,16 +73,29 @@ class HarnessOfficeApp {
   _connectWebSocket() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
-    ws.onmessage = (evt) => {
+    ws.onmessage = async (evt) => {
       try {
         const msg = JSON.parse(evt.data);
-        if (msg.type === 'initial_state' && msg.payload) {
+        if ((msg.type === 'initial_state' || msg.type === 'state_sync') && msg.payload) {
           this.state = msg.payload;
+          if (msg.event && msg.event.type === 'bridge_activity' && msg.event.payload) {
+            const bridgedId = msg.event.payload.agent_id || msg.event.payload.routed_to;
+            if (bridgedId && this.officeCanvas) {
+              this.officeCanvas.markAgentWorking(bridgedId, 600);
+            }
+            if (bridgedId) {
+              await this.selectAgent(bridgedId);
+              return;
+            }
+          }
           this._renderAll();
         }
       } catch (_) {
         // Ignore malformed packets
       }
+    };
+    ws.onclose = () => {
+      setTimeout(() => this._connectWebSocket(), 2500);
     };
   }
 

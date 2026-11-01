@@ -150,6 +150,17 @@ class HRRecommendRequest(BaseModel):
     auto_equip_squad: bool = False
 
 
+class BridgeDispatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_title: str
+    details: str = ""
+    agent_id: str | None = None
+    file_path: str | None = None
+    status: str = "working"
+    create_kanban_card: bool = True
+
+
 def create_app(manager: OfficeSessionManager | None = None) -> FastAPI:
     app = FastAPI(
         title="HarnessAgents Virtual Office & Multi-Agent Orchestrator",
@@ -443,16 +454,64 @@ def create_app(manager: OfficeSessionManager | None = None) -> FastAPI:
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
+    @app.post("/api/bridge/dispatch")
+    async def bridge_dispatch_route(req: BridgeDispatchRequest) -> dict[str, object]:
+        return session_mgr.bridge_dispatch_from_antigravity(
+            task_title=req.task_title,
+            details=req.details,
+            agent_id=req.agent_id,
+            file_path=req.file_path,
+            status=req.status,
+            create_kanban_card=req.create_kanban_card,
+        )
+
+    @app.post("/api/bridge/scan")
+    async def bridge_scan_route() -> dict[str, object]:
+        events = session_mgr.scan_antigravity_workspace_changes()
+        return {"detected_changes": len(events), "events": events}
+
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket) -> None:
+        import asyncio
+
         await ws.accept()
         await ws.send_json({"type": "initial_state", "payload": session_mgr.full_state_snapshot()})
+
+        queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
+        def _on_event(packet: dict[str, object]) -> None:
+            try:
+                queue.put_nowait(packet)
+            except asyncio.QueueFull:
+                pass
+
+        session_mgr.subscribe(_on_event)
         try:
             while True:
-                data = await ws.receive_json()
-                if data.get("action") == "ping":
-                    await ws.send_json({"type": "pong"})
+                # Poll for Antigravity IDE file changes or emitted bridge events every 1.5s
+                try:
+                    evt = await asyncio.wait_for(queue.get(), timeout=1.5)
+                    await ws.send_json(
+                        {
+                            "type": "state_sync",
+                            "event": evt,
+                            "payload": session_mgr.full_state_snapshot(),
+                        }
+                    )
+                except TimeoutError:
+                    changes = session_mgr.scan_antigravity_workspace_changes()
+                    if changes:
+                        await ws.send_json(
+                            {
+                                "type": "state_sync",
+                                "event": {"type": "bridge_activity", "payload": changes[-1]},
+                                "payload": session_mgr.full_state_snapshot(),
+                            }
+                        )
         except WebSocketDisconnect:
             return
+        finally:
+            if _on_event in session_mgr._event_listeners:
+                session_mgr._event_listeners.remove(_on_event)
 
     return app

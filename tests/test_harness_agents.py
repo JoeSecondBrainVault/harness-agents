@@ -115,3 +115,20 @@ def test_fastapi_endpoints_and_ui_serving(temp_manager: OfficeSessionManager) ->
     resp_files = client.get("/api/agents/ramon/files")
     assert resp_files.status_code == 200
     assert len(resp_files.json()["files"]) >= 1
+
+    # Test Antigravity -> Virtual Office AI Team Live Bridge
+    resp_bridge = client.post(
+        "/api/bridge/dispatch",
+        json={
+            "task_title": "Added scientific trig functions to calculator.py",
+            "details": "Dispatched directly from Antigravity IDE",
+            "file_path": "calculator.py",
+            "status": "working",
+            "create_kanban_card": True,
+        },
+    )
+    assert resp_bridge.status_code == 200
+    assert resp_bridge.json()["routed_to"] == "ken"
+
+    resp_scan = client.post("/api/bridge/scan")
+    assert resp_scan.status_code == 200

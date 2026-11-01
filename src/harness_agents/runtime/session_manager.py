@@ -74,6 +74,7 @@ class OfficeSessionManager:
         self.terminal_logs: dict[str, list[str]] = {}
         self.traces: dict[str, list[dict[str, object]]] = {}
         self._event_listeners: list[Callable[[dict[str, object]], None]] = []
+        self._watched_file_mtimes: dict[str, float] = {}
 
         for agent in self.agents.values():
             self.terminal_logs[agent.id] = self._build_welcome_banner(agent)
@@ -1051,6 +1052,149 @@ class OfficeSessionManager:
         self._record_trace(agent.id, "github_repo_created", f"{res.repo_url} ({res.status})")
         self._emit("repo_created", res.model_dump())
         return res.model_dump()
+
+    @staticmethod
+    def _route_file_or_task_to_agent_id(text_or_path: str) -> str:
+        """Map a filename or task description from Antigravity to the matching AI teammate."""
+        lower = text_or_path.lower()
+        if any(w in lower for w in ("test_", "_test.", ".spec.", "pytest", "vitest", "qa", "test")):
+            return "mira"
+        if any(w in lower for w in (".gitignore", "security", "audit", "owasp", "secret", "bandit")):
+            return "sentinel"
+        if any(w in lower for w in (".html", ".css", ".js", ".jsx", ".ts", ".tsx", "ui", "frontend", "react", "canvas")):
+            return "ada"
+        if any(w in lower for w in (".py", ".sql", ".db", ".json", "api", "backend", "server", "route")):
+            return "ken"
+        if any(w in lower for w in ("skill", "hire", "recruit", "hr")):
+            return "rogelio"
+        return "ramon"
+
+    def bridge_dispatch_from_antigravity(
+        self,
+        task_title: str,
+        details: str = "",
+        agent_id: str | None = None,
+        file_path: str | None = None,
+        status: str = "working",
+        create_kanban_card: bool = True,
+    ) -> dict[str, object]:
+        """Receive a live task or file event directly from the Antigravity App and animate the AI team."""
+        chosen_id = agent_id if (agent_id and agent_id in self.agents) else self._route_file_or_task_to_agent_id(file_path or task_title)
+        agent = self.agents.get(chosen_id) or self.agents["ramon"]
+
+        # Seat the agent at their computer desk and set working status
+        agent.target_x = float(agent.desk_x)
+        agent.target_y = float(agent.desk_y)
+        agent.current_x = float(agent.desk_x)
+        agent.current_y = float(agent.desk_y)
+        agent.status = AgentStatus.IDLE if status.lower() in ("idle", "done", "completed") else AgentStatus.WORKING
+        agent.speech_bubble = f"⚡ {task_title[:22]}"
+
+        if file_path:
+            p = Path(file_path)
+            if p.exists():
+                target_dir = p.parent if p.is_file() else p
+                for peer in self.agents.values():
+                    peer.workspace_path = str(target_dir.resolve())
+
+        log_block = (
+            "\n\x1b[36m╭─ ⚡ ANTIGRAVITY LIVE BRIDGE -> "
+            f"{agent.name.upper()} ({agent.role}) ────────────────\x1b[0m\n"
+            f"│ 🎯 Task  : \x1b[33m{task_title}\x1b[0m\n"
+            + (f"│ 📄 File  : \x1b[32m{file_path}\x1b[0m\n" if file_path else "")
+            + (f"│ 📝 Detail: {details}\n" if details else "")
+            + f"│ 🔄 Status: {agent.status.value.upper()}\n"
+            "\x1b[36m╰────────────────────────────────────────────────────────────────────\x1b[0m"
+        )
+        self.terminal_logs[agent.id].append(log_block)
+        if agent.id != "ramon" and "ramon" in self.agents:
+            self.terminal_logs["ramon"].append(
+                f"\x1b[36m[⚡ ANTIGRAVITY -> {agent.name.upper()}]\x1b[0m {task_title}"
+                + (f" (`{Path(file_path).name}`)" if file_path else "")
+            )
+
+        agent.telemetry.turns += 1
+        agent.telemetry.tokens_out += max(40, len(details or task_title) // 3)
+        self._record_trace(agent.id, "antigravity_bridge", f"{task_title} ({file_path or 'direct'})")
+
+        kanban_task_dict: dict[str, object] | None = None
+        if create_kanban_card:
+            rec_skills = self.ecc_loader.auto_recommend_skills(f"{task_title} {details}", limit=2)
+            for sk in rec_skills:
+                if sk not in agent.equipped_skills and len(agent.equipped_skills) < 6:
+                    agent.equipped_skills.append(sk)
+            kt = self.kanban.create_task(
+                title=f"[Antigravity] {task_title[:65]}",
+                description=details or f"Dispatched live from Antigravity to {agent.name}",
+                assigned_agent_id=agent.id,
+                recommended_skills=rec_skills,
+                priority="high",
+            )
+            if status.lower() in ("done", "completed"):
+                self.kanban.update_task(kt.id, status=KanbanStatus.DONE)
+            else:
+                self.kanban.update_task(kt.id, status=KanbanStatus.IN_PROGRESS)
+            kanban_task_dict = kt.model_dump()
+
+        self._emit(
+            "bridge_activity",
+            {
+                "agent_id": agent.id,
+                "agent": agent.model_dump(),
+                "task_title": task_title,
+                "file_path": file_path,
+                "log": log_block,
+            },
+        )
+        return {
+            "status": "ok",
+            "routed_to": agent.id,
+            "agent_name": agent.name,
+            "agent_role": agent.role,
+            "workspace_path": agent.workspace_path,
+            "kanban_task": kanban_task_dict,
+        }
+
+    def scan_antigravity_workspace_changes(self) -> list[dict[str, object]]:
+        """Detect file creates/saves inside the active project workspace from Antigravity IDE and animate the matching specialist."""
+        ramon = self.agents.get("ramon")
+        if not ramon:
+            return []
+        target_dir = Path(ramon.workspace_path)
+        if not target_dir.exists() or not target_dir.is_dir():
+            return []
+
+        events: list[dict[str, object]] = []
+        first_scan = len(self._watched_file_mtimes) == 0
+        allowed_exts = {".py", ".js", ".ts", ".tsx", ".html", ".css", ".json", ".md", ".sql", ".sh", ".ps1"}
+
+        for p in target_dir.rglob("*"):
+            if not p.is_file():
+                continue
+            if any(part.startswith(".") or part in ("__pycache__", "node_modules", ".venv") for part in p.parts):
+                continue
+            if p.suffix.lower() not in allowed_exts and p.name != ".gitignore":
+                continue
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+
+            key = str(p.resolve())
+            prev_mtime = self._watched_file_mtimes.get(key)
+            self._watched_file_mtimes[key] = mtime
+
+            if not first_scan and (prev_mtime is None or mtime > prev_mtime + 0.05):
+                action = "Created" if prev_mtime is None else "Updated"
+                ev = self.bridge_dispatch_from_antigravity(
+                    task_title=f"{action} {p.name} in Antigravity",
+                    details=f"File `{p.name}` ({p.stat().st_size} bytes) synced from Antigravity IDE.",
+                    file_path=key,
+                    status="working",
+                    create_kanban_card=False,
+                )
+                events.append(ev)
+        return events
 
     def full_state_snapshot(self) -> dict[str, object]:
         return {
