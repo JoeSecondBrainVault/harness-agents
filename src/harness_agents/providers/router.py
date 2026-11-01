@@ -70,11 +70,14 @@ class MultiModelRouter:
                 if live_text:
                     provider_used = "gh-cli / github-models"
         elif agent.provider == ProviderType.GROQ and os.environ.get("GROQ_API_KEY"):
-            groq_model = (
-                agent.model_id
-                if any(k in agent.model_id for k in ("llama", "qwen", "deepseek"))
-                and "/" not in agent.model_id
-                else "llama-3.3-70b-versatile"
+            groq_map = {
+                "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
+                "qwen-qwq-32b": "qwen/qwen3.8-27b",
+                "deepseek-r1-distill-llama-70b": "openai/gpt-oss-120b",
+            }
+            groq_model = groq_map.get(
+                agent.model_id,
+                agent.model_id if agent.model_id in ("openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b") else "openai/gpt-oss-120b",
             )
             cli_cmd_used = f"groq-cli --model {groq_model}"
             live_text = await self._call_openai_compatible(
@@ -120,13 +123,13 @@ class MultiModelRouter:
             live_text = await self._call_openai_compatible(
                 url="https://api.groq.com/openai/v1/chat/completions",
                 api_key=os.environ.get("GROQ_API_KEY", ""),
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
             )
             if live_text:
                 provider_used = "groq-lpu (auto-failover)"
-                cli_cmd_used = "groq-cli --model llama-3.3-70b-versatile"
+                cli_cmd_used = "groq-cli --model openai/gpt-oss-120b"
 
         if not live_text and os.environ.get("OPENROUTER_API_KEY"):
             live_text = await self._call_openai_compatible(
@@ -197,10 +200,10 @@ class MultiModelRouter:
                 {"role": "user", "content": user_prompt[:4000]},
             ],
             "temperature": 0.2,
-            "max_tokens": 1800,
+            "max_tokens": 3500,
         }
         try:
-            async with httpx.AsyncClient(timeout=12.0) as client:
+            async with httpx.AsyncClient(timeout=20.0) as client:
                 resp = await client.post(url, headers=headers, json=payload)
                 if resp.status_code == 200:
                     data = resp.json()

@@ -651,7 +651,7 @@ class OfficeSessionManager:
             return ""
 
         code_blocks = re.findall(
-            r"(?:###\s*FILE:\s*([a-zA-Z0-9_./-]+)\s*\n)?```([a-zA-Z0-9_-]*)\n(.*?)```",
+            r"(?:###\s*FILE:\s*([a-zA-Z0-9_./-]+)\s*\n)?```([a-zA-Z0-9_-]*)\n(.*?)(?:```|\Z)",
             llm_output,
             flags=re.DOTALL,
         )
