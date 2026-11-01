@@ -96,3 +96,22 @@ def test_fastapi_endpoints_and_ui_serving(temp_manager: OfficeSessionManager) ->
     )
     assert resp_patch.status_code == 200
     assert resp_patch.json()["agent"]["harness_level"] == "ultra"
+
+    # Test Rogelio (HR) skill recommender & 1-click new project endpoint
+    resp_hr = client.post(
+        "/api/hr/recommend",
+        json={"project_description": "Build a Python calculator with unit tests", "target_agent_id": "ramon", "auto_equip_squad": True},
+    )
+    assert resp_hr.status_code == 200
+    assert len(resp_hr.json()["recommended_skills"]) > 0
+
+    resp_proj = client.post(
+        "/api/projects/new",
+        json={"project_name": "python-calculator", "description": "Python CLI calculator", "auto_equip_hr": True},
+    )
+    assert resp_proj.status_code == 200
+    assert "python-calculator" in resp_proj.json()["workspace_path"]
+
+    resp_files = client.get("/api/agents/ramon/files")
+    assert resp_files.status_code == 200
+    assert len(resp_files.json()["files"]) >= 1

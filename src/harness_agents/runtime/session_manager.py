@@ -727,45 +727,292 @@ class OfficeSessionManager:
             "\x1b[36m╰────────────────────────────────────────────────────────────────────\x1b[0m"
         )
 
+    def list_project_files(self, agent_id: str) -> dict[str, object]:
+        """List and read source files inside the agent's current workspace folder for the In-Browser IDE."""
+        agent = self.agents.get(agent_id) or next(iter(self.agents.values()))
+        target_dir = Path(agent.workspace_path)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        files_out: list[dict[str, object]] = []
+        allowed_exts = {".py", ".js", ".ts", ".html", ".css", ".json", ".md", ".txt", ".sh", ".ps1", ".bat", ".yaml", ".yml"}
+        for p in sorted(target_dir.iterdir(), key=lambda x: (x.name == "README.md", x.name.lower())):
+            if p.is_file() and (p.suffix.lower() in allowed_exts or p.stat().st_size < 120_000):
+                try:
+                    content = p.read_text(encoding="utf-8", errors="replace")
+                    files_out.append(
+                        {
+                            "name": p.name,
+                            "path": str(p),
+                            "size": p.stat().st_size,
+                            "content": content,
+                        }
+                    )
+                except OSError:
+                    continue
+        return {"workspace_path": str(target_dir), "files": files_out}
+
+    def save_project_file(self, agent_id: str, filename: str, content: str) -> dict[str, object]:
+        """Save an edited file from the In-Browser IDE directly into the agent's project folder."""
+        agent = self.agents.get(agent_id) or next(iter(self.agents.values()))
+        target_dir = Path(agent.workspace_path)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = Path(filename.strip()).name
+        if not safe_name:
+            raise ValueError("Invalid filename")
+        dest = (target_dir / safe_name).resolve()
+        dest.write_text(content, encoding="utf-8")
+        log_msg = f"\x1b[32m[<> IDE SAVE]\x1b[0m Saved `{dest}` ({len(content)} bytes)"
+        self.terminal_logs[agent.id].append(log_msg)
+        return {"saved": True, "path": str(dest), "size": len(content)}
+
+    def run_project_file(self, agent_id: str, filename: str, stdin_text: str = "") -> dict[str, object]:
+        """Execute a Python or script file inside the agent's project folder and return stdout/stderr."""
+        agent = self.agents.get(agent_id) or next(iter(self.agents.values()))
+        target_dir = Path(agent.workspace_path)
+        safe_name = Path(filename.strip()).name
+        script_path = (target_dir / safe_name).resolve()
+        if not script_path.exists():
+            return {"exit_code": 1, "output": f"File not found: {script_path}"}
+
+        py_exe = str(Path("C:/Users/Legion/.gemini/antigravity/scratch/harness-agents/.venv/Scripts/python.exe"))
+        if not os.path.exists(py_exe):
+            py_exe = shutil.which("python") or "python"
+
+        # Provide sample non-blocking stdin if interactive input() is used and no stdin_text was passed
+        effective_stdin = stdin_text if stdin_text else "2 + 2\n10 * 5\nquit\n"
+        try:
+            proc = subprocess.run(
+                [py_exe, str(script_path)],
+                cwd=str(target_dir),
+                input=effective_stdin,
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            combined = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+            output = combined.strip() or "(Process exited with 0 and no stdout output)"
+            code = proc.returncode
+        except subprocess.TimeoutExpired:
+            output = "Execution timed out after 8s (interactive loop waiting for input)."
+            code = 124
+        except OSError as exc:
+            output = f"Execution error: {exc}"
+            code = 1
+
+        self.terminal_logs[agent.id].append(
+            f"\x1b[36m[▶ RUN {safe_name}]\x1b[0m (exit {code})\n{output[:600]}"
+        )
+        return {"exit_code": code, "output": output, "path": str(script_path)}
+
     def open_agent_ide(self, agent_id: str) -> dict[str, object]:
-        """Launch Antigravity (`agy`), VS Code (`code`), or Explorer at the agent's workspace path."""
+        """Launch Desktop IDE (`Antigravity` / `VS Code`) in the foreground AND return project files for the In-Browser IDE."""
         agent = self.agents.get(agent_id)
         if not agent:
             raise ValueError(f"Unknown agent: {agent_id}")
         target_dir = Path(agent.workspace_path)
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check for Antigravity CLI (`agy`) or VS Code (`code`) on Windows
         candidates = [
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Antigravity\bin\agy.cmd"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\bin\code.cmd"),
             shutil.which("agy"),
             shutil.which("antigravity"),
             shutil.which("code"),
-            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Antigravity\bin\agy.cmd"),
-            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\bin\code.cmd"),
         ]
         ide_bin = next((c for c in candidates if c and os.path.exists(c)), None)
-        launched = "explorer"
-        if ide_bin:
-            subprocess.Popen([ide_bin, str(target_dir)], shell=False)
-            launched = Path(ide_bin).stem
-        else:
-            subprocess.Popen(["explorer.exe", str(target_dir)], shell=False)
+        launched = "in-browser-ide"
+        try:
+            if ide_bin:
+                cmd_bin = shutil.which("cmd.exe") or "cmd.exe"
+                subprocess.Popen([cmd_bin, "/c", "start", "", ide_bin, str(target_dir)], shell=False)
+                launched = Path(ide_bin).stem
+        except OSError:
+            launched = "in-browser-ide"
 
-        log_msg = f"\x1b[36m[<> IDE]\x1b[0m Opened `{target_dir}` in {launched}"
+        files_payload = self.list_project_files(agent_id)
+        log_msg = f"\x1b[36m[<> IDE]\x1b[0m Opened `{target_dir}` ({len(files_payload['files'])} files)"
         self.terminal_logs[agent.id].append(log_msg)
-        return {"opened": True, "path": str(target_dir), "launcher": launched}
+        return {
+            "opened": True,
+            "path": str(target_dir),
+            "launcher": launched,
+            "files": files_payload["files"],
+        }
 
     def open_agent_folder(self, agent_id: str) -> dict[str, object]:
-        """Open Windows File Explorer directly at the agent's workspace path."""
+        """Open Windows File Explorer in the foreground at the agent's workspace path."""
         agent = self.agents.get(agent_id)
         if not agent:
             raise ValueError(f"Unknown agent: {agent_id}")
         target_dir = Path(agent.workspace_path)
         target_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.Popen(["explorer.exe", str(target_dir)], shell=False)
-        log_msg = f"\x1b[36m[📁 OPEN]\x1b[0m Opened folder `{target_dir}` in Windows Explorer"
+
+        # Native Win32 ShellExecuteW brings File Explorer to the foreground on Windows
+        opened_native = False
+        if hasattr(os, "startfile"):
+            try:
+                os.startfile(str(target_dir))  # type: ignore[attr-defined]
+                opened_native = True
+            except OSError:
+                opened_native = False
+        if not opened_native:
+            cmd_bin = shutil.which("cmd.exe") or "cmd.exe"
+            subprocess.Popen([cmd_bin, "/c", "start", "", "explorer.exe", str(target_dir)], shell=False)
+
+        log_msg = f"\x1b[36m[📁 OPEN]\x1b[0m Opened folder `{target_dir}` in Windows File Explorer"
         self.terminal_logs[agent.id].append(log_msg)
         return {"opened": True, "path": str(target_dir)}
+
+    def hr_recommend_skills(
+        self,
+        project_description: str,
+        target_agent_id: str = "ramon",
+        auto_equip_squad: bool = False,
+    ) -> dict[str, object]:
+        """Have Rogelio (HR & Recruitment) recommend the best ECC skills and a specialist agent to hire."""
+        desc = project_description.strip() or "Full-stack software application with automated tests and security audit"
+        top_skill_ids = self.ecc_loader.auto_recommend_skills(desc, limit=5)
+
+        skill_details: list[dict[str, str]] = []
+        for sid in top_skill_ids:
+            entry = self.ecc_loader.get_skill(sid)
+            if entry:
+                skill_details.append(
+                    {
+                        "id": entry.id,
+                        "name": entry.name,
+                        "category": entry.category,
+                        "description": entry.description,
+                    }
+                )
+            else:
+                skill_details.append(
+                    {
+                        "id": sid,
+                        "name": sid,
+                        "category": "Engineering",
+                        "description": "Specialized ECC workflow cartridge.",
+                    }
+                )
+
+        # Determine a tailored new specialist agent suggestion from the project description
+        lower = desc.lower()
+        if any(w in lower for w in ("ui", "frontend", "react", "next", "css", "html", "web", "design")):
+            sug_name = "elena"
+            sug_role = "Frontend & Interactive UI Specialist"
+            sug_model = "qwen/qwen-2.5-coder-32b-instruct:free"
+        elif any(w in lower for w in ("mobile", "android", "ios", "expo", "flutter", "game")):
+            sug_name = "marco"
+            sug_role = "Mobile & Cross-Platform App Engineer"
+            sug_model = "gemini-3.8-flash"
+        elif any(w in lower for w in ("security", "auth", "audit", "pentest", "crypto")):
+            sug_name = "viktor"
+            sug_role = "Application Security & OWASP Auditor"
+            sug_model = "deepseek-r1-distill-llama-70b"
+        elif any(w in lower for w in ("data", "ml", "ai", "analytics", "sql", "database", "bigquery")):
+            sug_name = "sophia"
+            sug_role = "Data Engineering & AI Pipeline Specialist"
+            sug_model = "gemini-4-argon"
+        else:
+            sug_name = "carlo"
+            sug_role = "Python & Full-Stack Automation Specialist"
+            sug_model = "llama-3.3-70b-versatile"
+
+        equipped_agents: list[str] = []
+        if auto_equip_squad:
+            target_ag = self.agents.get(target_agent_id)
+            if target_ag:
+                for sid in top_skill_ids[:4]:
+                    if sid not in target_ag.equipped_skills:
+                        target_ag.equipped_skills.append(sid)
+                equipped_agents.append(target_ag.name)
+            for aid in ("ramon", "ada", "ken", "mira", "sentinel"):
+                ag = self.agents.get(aid)
+                if ag:
+                    role_picks = self.ecc_loader.auto_recommend_skills(f"{desc} {ag.role}", limit=3)
+                    for sid in role_picks:
+                        if sid not in ag.equipped_skills and len(ag.equipped_skills) < 6:
+                            ag.equipped_skills.append(sid)
+                    if ag.name not in equipped_agents:
+                        equipped_agents.append(ag.name)
+
+            rogelio = self.agents.get("rogelio")
+            if rogelio:
+                rogelio.speech_bubble = f"Equipped {len(top_skill_ids)} skills! 🧑‍💼"
+            if target_ag:
+                hr_box = (
+                    "\n\x1b[35m╭─ 🧑‍💼 ROGELIO (HR & SKILL ADVISOR) ─────────────────────────────────\x1b[0m\n"
+                    f"│ Goal: \x1b[33m{desc[:65]}\x1b[0m\n"
+                    f"│ Auto-Equipped Skills on {target_ag.name}: \x1b[32m{', '.join(top_skill_ids[:4])}\x1b[0m\n"
+                    f"│ Squad Synced: {', '.join(equipped_agents)}\n"
+                    "\x1b[35m╰────────────────────────────────────────────────────────────────────\x1b[0m"
+                )
+                self.terminal_logs[target_ag.id].append(hr_box)
+            self._emit("hr_equipped", {"skills": top_skill_ids, "agents": equipped_agents})
+
+        return {
+            "project_description": desc,
+            "recommended_skills": skill_details,
+            "auto_equipped_agents": equipped_agents,
+            "suggested_agent": {
+                "name": sug_name,
+                "role": sug_role,
+                "department": "Projects",
+                "model_id": sug_model,
+                "skills": top_skill_ids[:4],
+            },
+        }
+
+    def start_new_project(
+        self,
+        project_name: str,
+        description: str = "",
+        auto_equip_hr: bool = True,
+    ) -> dict[str, object]:
+        """1-Click New Project: create a clean folder in scratch/projects, reset CLI logs, and auto-equip via HR."""
+        slug = re.sub(r"[^a-z0-9-]+", "-", project_name.lower()).strip("-") or f"project-{secrets.token_hex(2)}"
+        projects_base = Path("C:/Users/Legion/.gemini/antigravity/scratch/projects")
+        project_dir = (projects_base / slug).resolve()
+        project_dir.mkdir(parents=True, exist_ok=True)
+
+        readme_path = project_dir / "README.md"
+        if not readme_path.exists():
+            readme_path.write_text(
+                f"# {slug}\n\n> Created in DevLabs • HarnessAgents\n\n## Project Goal\n{description or project_name}\n",
+                encoding="utf-8",
+            )
+
+        hr_result = self.hr_recommend_skills(
+            project_description=f"{project_name} {description}".strip(),
+            target_agent_id="ramon",
+            auto_equip_squad=auto_equip_hr,
+        )
+        rec_ids = [s["id"] for s in hr_result["recommended_skills"]]  # type: ignore[index]
+
+        for ag in self.agents.values():
+            ag.workspace_path = str(project_dir)
+            ag.department = slug
+            ag.status = AgentStatus.IDLE
+            ag.speech_bubble = f"New Project: {slug} 🚀"
+            self.terminal_logs[ag.id] = [
+                f"\x1b[36m╭─ 🚀 NEW PROJECT INITIALIZED: {slug.upper()} ─────────────────────────\x1b[0m",
+                f"│ 📂 Folder: \x1b[33m{project_dir}\x1b[0m",
+                f"│ 🎯 Goal: {description or project_name}",
+                f"│ 🧑‍💼 Rogelio (HR) Auto-Equipped Skills: \x1b[32m{', '.join(rec_ids[:4])}\x1b[0m",
+                "│ 💡 Type your prompt below to start building, or click [<> IDE] / [📁 open] above!",
+                "\x1b[36m╰────────────────────────────────────────────────────────────────────\x1b[0m",
+            ]
+
+        self._emit("new_project_started", {"project_dir": str(project_dir), "slug": slug, "hr": hr_result})
+        return {
+            "status": "ok",
+            "project_slug": slug,
+            "workspace_path": str(project_dir),
+            "hr_recommendations": hr_result,
+        }
 
     def create_and_push_org_repo(
         self,

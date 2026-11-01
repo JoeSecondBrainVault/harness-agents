@@ -25,6 +25,8 @@
     </div>
 
     <div class="top-actions-cluster">
+      <button class="hud-btn" style="padding:3px 10px;border-color:#a3e635;color:#a3e635;font-weight:700;" onclick="window.app.openNewProjectModal()" title="Start a Brand-New Project in 1 Click (with HR Auto-Skill Equip)">🚀 + New Project</button>
+      <button class="hud-btn" style="padding:3px 10px;border-color:#c084fc;color:#e9d5ff;font-weight:700;" onclick="window.app.openHRModal()" title="Ask Rogelio (HR) what skills to equip or hire a specialist agent">🧑‍💼 Ask HR (Rogelio)</button>
       <button class="hud-btn sweldo-btn" style="padding:3px 9px;" onclick="window.app.openGitHubModal()" title="Create or Push Repo in https://github.com/JoeSecondBrainVault">🐙 JoeSecondBrainVault</button>
       <div class="provider-pills">
         <span class="prov-pill" title="Gemini 4 Argon, Opus 5.5, Sonnet 5.5, Flash 3.8"><span class="prov-dot"></span>Gemini Pro Suite</span>
@@ -118,8 +120,8 @@
         <span id="canvasStatusHint" class="canvas-status-hint">drag items/walls to move • press R to rotate • right-click item/wall to delete • 🛠️ Customize Office for tiles &amp; items</span>
       </div>
 
-      <!-- Floating Bottom-Center Floor Bar -->
-      <div class="hud-bottom-center">
+      <!-- Floating Bottom-Center Floor Bar (Hidden per user preference for clean office view) -->
+      <div class="hud-bottom-center" style="display:none;">
         <div id="floorButtonsContainer" style="display:flex;gap:4px;"></div>
         <button class="floor-btn" onclick="window.app.addFloor()">+ Add<br/>floor</button>
         <div class="move-agent-box">
@@ -296,13 +298,21 @@
   <!-- Bottom Agent Roster Dock -->
   <footer id="bottomRosterDock" class="bottom-roster-dock"></footer>
 
-  <!-- Modal: Spawn New Agent -->
+  <!-- Modal: Spawn New Agent (with Rogelio HR Auto-Skill Recommendation) -->
   <div id="addAgentModal" class="modal-backdrop">
-    <div class="modal-box">
+    <div class="modal-box" style="width:500px;">
       <h3>✨ Spawn New Specialist Agent</h3>
+      <div style="background:#18181f;border:1px solid #3b0764;border-radius:6px;padding:10px;margin-bottom:10px;">
+        <div style="font-size:11px;color:#e9d5ff;font-weight:700;margin-bottom:4px;">🧑‍💼 Don't know what skills or agent to hire? Ask Rogelio (HR):</div>
+        <div style="display:flex;gap:6px;">
+          <input id="hrQuickAskInput" class="modal-input" style="flex:1;" placeholder="Describe what you're building (e.g. 'mobile fitness app' or 'security audit')..." />
+          <button class="sm-btn" style="border-color:#c084fc;color:#e9d5ff;flex-shrink:0;" onclick="window.app.askRogelioForNewAgent()">🧑‍💼 Auto-Fill via HR</button>
+        </div>
+        <div id="hrQuickResultBox" style="display:none;margin-top:6px;font-size:11px;color:#a3e635;font-family:var(--font-mono);"></div>
+      </div>
       <div class="modal-row">
         <label>Agent Name</label>
-        <input id="newAgentName" class="modal-input" placeholder="e.g. carlo - devops & docker" />
+        <input id="newAgentName" class="modal-input" placeholder="e.g. carlo" />
       </div>
       <div class="modal-row">
         <label>Role / Specialty</label>
@@ -316,9 +326,90 @@
         <label>AI Model (Zero Extra Cost)</label>
         <select id="newAgentModel" class="modal-input"></select>
       </div>
+      <div class="modal-row">
+        <label>Pre-Equipped ECC Skills (comma-separated, optional — HR fills this automatically)</label>
+        <input id="newAgentSkills" class="modal-input" placeholder="e.g. tdd-workflow, backend-patterns, code-review-gate" />
+      </div>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;">
         <button class="sm-btn" onclick="window.app.closeModals()">Cancel</button>
-        <button class="send-btn" onclick="window.app.submitNewAgent()">Spawn in Office →</button>
+        <button class="send-btn" onclick="window.app.submitNewAgent()">✅ Hire &amp; Spawn in Office →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: 1-Click New Project & Rogelio (HR) Skill Advisor -->
+  <div id="hrProjectModal" class="modal-backdrop">
+    <div class="modal-box" style="width:540px;">
+      <h3 id="hrModalTitle">🚀 Start New Project &amp; 🧑‍💼 HR Skill Matchmaker</h3>
+      <p style="font-size:11px;color:#9ca3af;margin-bottom:10px;">
+        Tell <strong>Rogelio (HR &amp; Recruitment)</strong> what you want to build. He will create your project folder, pick the best skills from the <strong>311 ECC Armory</strong>, and equip your squad in 1 click!
+      </p>
+      <div class="modal-row">
+        <label>Project Name (Folder inside <code>scratch\projects\</code>)</label>
+        <input id="newProjNameInput" class="modal-input" placeholder="e.g. python-calculator or expense-tracker" />
+      </div>
+      <div class="modal-row">
+        <label>What do you want to build? (Rogelio HR uses this to pick the best skills)</label>
+        <div style="display:flex;gap:6px;">
+          <input id="newProjDescInput" class="modal-input" style="flex:1;" placeholder="e.g. Build a Python calculator app with CLI and unit tests..." />
+          <button class="sm-btn" style="border-color:#c084fc;color:#e9d5ff;flex-shrink:0;" onclick="window.app.previewHRRecommendations()">🧑‍💼 Ask HR</button>
+        </div>
+      </div>
+
+      <div id="hrRecommendationPanel" style="background:#111116;border:1px solid #2e2e38;border-radius:6px;padding:10px;margin:8px 0;">
+        <div style="font-size:11px;color:#c084fc;font-weight:700;font-family:var(--font-mono);">🧑‍💼 ROGELIO'S RECOMMENDED ECC SKILLS:</div>
+        <div id="hrRecommendedSkillsList" style="margin-top:6px;font-size:11px;color:#d4d4d8;">
+          Type a project description above and click <b>🧑‍💼 Ask HR</b> (or click <b>🚀 Start Project in 1 Click</b> below to auto-equip automatically!).
+        </div>
+        <div id="hrSuggestedHireBox" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid #27272f;font-size:11px;"></div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
+        <button class="sm-btn" style="border-color:#c084fc;color:#e9d5ff;" onclick="window.app.autoEquipCurrentSquadFromHR()">⚡ Just Auto-Equip Current Squad</button>
+        <div style="display:flex;gap:8px;">
+          <button class="sm-btn" onclick="window.app.closeModals()">Close</button>
+          <button class="send-btn" onclick="window.app.submitNewProject()">🚀 Start Project in 1 Click →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Built-In Project IDE & Code Runner -->
+  <div id="ideModal" class="modal-backdrop">
+    <div class="modal-box" style="width:820px;max-width:94vw;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div>
+          <h3 style="margin:0;">&lt;&gt; Project IDE &amp; Code Runner</h3>
+          <div id="ideWorkspacePathLabel" style="font-size:11px;color:#67e8f9;font-family:var(--font-mono);margin-top:2px;"></div>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="sm-btn" style="border-color:#fde047;color:#fde047;" onclick="window.app.openAgentFolder()">📁 Open in Windows Explorer</button>
+          <button class="sm-btn" onclick="window.app.closeModals()">✕ Close</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:200px 1fr;gap:10px;height:420px;">
+        <!-- Left File List -->
+        <div style="background:#0d0d12;border:1px solid #27272f;border-radius:6px;padding:8px;overflow-y:auto;">
+          <div style="font-size:10px;color:#9ca3af;font-family:var(--font-mono);font-weight:700;margin-bottom:6px;">📂 PROJECT FILES</div>
+          <div id="ideFileList"></div>
+        </div>
+
+        <!-- Right Code Editor + Output Console -->
+        <div style="display:flex;flex-direction:column;gap:8px;min-width:0;">
+          <div style="display:flex;justify-content:space-between;align-items:center;background:#14141b;padding:5px 10px;border-radius:6px;border:1px solid #27272f;">
+            <span id="ideCurrentFileName" style="font-family:var(--font-mono);font-size:12px;color:#a3e635;font-weight:700;">calculator.py</span>
+            <div style="display:flex;gap:6px;">
+              <button class="sm-btn" style="border-color:#38bdf8;color:#67e8f9;" onclick="window.app.saveCurrentIdeFile()">💾 Save File</button>
+              <button class="send-btn" style="padding:3px 10px;font-size:11px;" onclick="window.app.runCurrentIdeFile()">▶ Run Code</button>
+            </div>
+          </div>
+          <textarea id="ideCodeEditor" style="flex:1;background:#09090c;color:#f4f4f5;border:1px solid #27272f;border-radius:6px;padding:10px;font-family:var(--font-mono);font-size:12px;line-height:1.45;resize:none;outline:none;"></textarea>
+          <div style="height:115px;background:#050507;border:1px solid #27272f;border-radius:6px;padding:8px;overflow-y:auto;font-family:var(--font-mono);font-size:11px;">
+            <div style="color:#9ca3af;font-size:10px;margin-bottom:4px;">&gt;_ RUN OUTPUT CONSOLE (stdin Input for interactive scripts: <input id="ideStdinInput" type="text" value="10 + 5&#10;quit" style="background:#14141b;border:1px solid #3f3f46;color:#e4e4e7;font-size:10px;padding:1px 5px;width:160px;border-radius:3px;" />)</div>
+            <pre id="ideRunOutput" style="margin:0;color:#a3e635;white-space:pre-wrap;">Click [▶ Run Code] above to execute this file...</pre>
+          </div>
+        </div>
       </div>
     </div>
   </div>

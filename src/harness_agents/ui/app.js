@@ -809,11 +809,23 @@ class HarnessOfficeApp {
     const department = document.getElementById('newAgentDept').value.trim() || 'HarnessAgents';
     const model_id = document.getElementById('newAgentModel').value;
     const floor = (this.state && this.state.active_floor) || 1;
+    const rawSkills = (document.getElementById('newAgentSkills') && document.getElementById('newAgentSkills').value) || '';
+    const equipped_skills = rawSkills
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
 
     const resp = await fetch('/api/agents', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, role, department, model_id, floor }),
+      body: JSON.stringify({
+        name,
+        role,
+        department,
+        model_id,
+        floor,
+        equipped_skills: equipped_skills.length ? equipped_skills : null,
+      }),
     });
     const data = await resp.json();
     this.closeModals();
@@ -821,6 +833,162 @@ class HarnessOfficeApp {
     if (data.agent && data.agent.id) {
       await this.selectAgent(data.agent.id);
     }
+  }
+
+  async askRogelioForNewAgent() {
+    const inp = document.getElementById('hrQuickAskInput');
+    const desc = (inp && inp.value.trim()) || 'Full-stack Python & Web developer with TDD and security skills';
+    const resp = await fetch('/api/hr/recommend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_description: desc,
+        target_agent_id: this.selectedAgentId,
+        auto_equip_squad: false,
+      }),
+    });
+    const data = await resp.json();
+    if (data.suggested_agent) {
+      const sug = data.suggested_agent;
+      document.getElementById('newAgentName').value = sug.name;
+      document.getElementById('newAgentRole').value = sug.role;
+      document.getElementById('newAgentDept').value = sug.department || 'Projects';
+      const modelSel = document.getElementById('newAgentModel');
+      if (modelSel) modelSel.value = sug.model_id;
+      const skInput = document.getElementById('newAgentSkills');
+      if (skInput) skInput.value = (sug.skills || []).join(', ');
+      const resBox = document.getElementById('hrQuickResultBox');
+      if (resBox) {
+        resBox.style.display = 'block';
+        resBox.textContent = `✓ Rogelio (HR) recommended ${sug.name.toUpperCase()} (${sug.role}) with skills: ${(sug.skills || []).join(', ')}`;
+      }
+    }
+  }
+
+  openNewProjectModal() {
+    document.getElementById('hrModalTitle').innerHTML = '🚀 Start New Project &amp; 🧑‍💼 HR Skill Matchmaker';
+    document.getElementById('hrProjectModal').classList.add('open');
+  }
+
+  openHRModal() {
+    document.getElementById('hrModalTitle').innerHTML = '🧑‍💼 Ask Rogelio (HR): Recommend Skills &amp; Specialist Agents';
+    document.getElementById('hrProjectModal').classList.add('open');
+    this.previewHRRecommendations();
+  }
+
+  async previewHRRecommendations() {
+    const projName = (document.getElementById('newProjNameInput') && document.getElementById('newProjNameInput').value.trim()) || '';
+    const projDesc = (document.getElementById('newProjDescInput') && document.getElementById('newProjDescInput').value.trim()) || '';
+    const query = `${projName} ${projDesc}`.trim() || 'Build a Python calculator app with CLI and unit tests';
+
+    const resp = await fetch('/api/hr/recommend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_description: query,
+        target_agent_id: this.selectedAgentId,
+        auto_equip_squad: false,
+      }),
+    });
+    const data = await resp.json();
+    this._lastHrSuggestion = data.suggested_agent || null;
+
+    const skillsEl = document.getElementById('hrRecommendedSkillsList');
+    if (skillsEl && data.recommended_skills) {
+      skillsEl.innerHTML = data.recommended_skills
+        .map(
+          (s) =>
+            `<div style="margin-bottom:5px;padding:4px 6px;background:#181820;border-radius:4px;border-left:3px solid #a3e635;">
+              <strong style="color:#a3e635;font-family:var(--font-mono);">⚡ ${s.id}</strong>
+              <span style="color:#67e8f9;font-size:10px;margin-left:6px;">[${s.category}]</span>
+              <div style="color:#9ca3af;font-size:10px;margin-top:2px;">${s.description}</div>
+            </div>`
+        )
+        .join('');
+    }
+
+    const hireBox = document.getElementById('hrSuggestedHireBox');
+    if (hireBox && data.suggested_agent) {
+      const sug = data.suggested_agent;
+      hireBox.style.display = 'block';
+      hireBox.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+          <div>
+            <div style="color:#e9d5ff;font-weight:700;">🧑‍💼 Rogelio's Suggested Specialist to Hire: <span style="color:#fde047;">${sug.name.toUpperCase()} — ${sug.role}</span></div>
+            <div style="color:#9ca3af;font-size:10px;font-family:var(--font-mono);">Skills: ${(sug.skills || []).join(', ')}</div>
+          </div>
+          <button class="sm-btn" style="border-color:#a3e635;color:#a3e635;flex-shrink:0;" onclick="window.app.hireSuggestedAgentFromHR()">✅ Hire ${sug.name.toUpperCase()} Now</button>
+        </div>
+      `;
+    }
+  }
+
+  async hireSuggestedAgentFromHR() {
+    if (!this._lastHrSuggestion) {
+      await this.previewHRRecommendations();
+    }
+    const sug = this._lastHrSuggestion;
+    if (!sug) return;
+    const floor = (this.state && this.state.active_floor) || 1;
+    const resp = await fetch('/api/agents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: sug.name,
+        role: sug.role,
+        department: sug.department || 'Projects',
+        model_id: sug.model_id,
+        floor,
+        equipped_skills: sug.skills,
+      }),
+    });
+    const data = await resp.json();
+    this.closeModals();
+    await this.refreshState();
+    if (data.agent && data.agent.id) {
+      await this.selectAgent(data.agent.id);
+    }
+  }
+
+  async autoEquipCurrentSquadFromHR() {
+    const projName = (document.getElementById('newProjNameInput') && document.getElementById('newProjNameInput').value.trim()) || '';
+    const projDesc = (document.getElementById('newProjDescInput') && document.getElementById('newProjDescInput').value.trim()) || '';
+    const query = `${projName} ${projDesc}`.trim() || 'Build a Python application with TDD unit tests and OWASP security';
+
+    await fetch('/api/hr/recommend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_description: query,
+        target_agent_id: this.selectedAgentId,
+        auto_equip_squad: true,
+      }),
+    });
+    this.closeModals();
+    await this.refreshState();
+    await this.selectAgent(this.selectedAgentId);
+  }
+
+  async submitNewProject() {
+    const project_name =
+      (document.getElementById('newProjNameInput') && document.getElementById('newProjNameInput').value.trim()) ||
+      'new-app';
+    const description =
+      (document.getElementById('newProjDescInput') && document.getElementById('newProjDescInput').value.trim()) ||
+      project_name;
+
+    await fetch('/api/projects/new', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_name,
+        description,
+        auto_equip_hr: true,
+      }),
+    });
+    this.closeModals();
+    await this.refreshState();
+    await this.selectAgent(this.selectedAgentId);
   }
 
   async submitNewTask() {
@@ -856,9 +1024,91 @@ class HarnessOfficeApp {
   }
 
   async openAgentIDE() {
-    await fetch(`/api/agents/${encodeURIComponent(this.selectedAgentId)}/open-ide`, {
+    const resp = await fetch(`/api/agents/${encodeURIComponent(this.selectedAgentId)}/open-ide`, {
       method: 'POST',
     });
+    const data = await resp.json();
+    this.ideFiles = data.files || [];
+    this.ideActiveIndex = 0;
+
+    const pathLbl = document.getElementById('ideWorkspacePathLabel');
+    if (pathLbl) pathLbl.textContent = `📂 ${data.path || ''}`;
+
+    this._renderIdeModalFiles();
+    document.getElementById('ideModal').classList.add('open');
+
+    await this.refreshState();
+    await this.selectAgent(this.selectedAgentId);
+  }
+
+  _renderIdeModalFiles() {
+    const listEl = document.getElementById('ideFileList');
+    const editorEl = document.getElementById('ideCodeEditor');
+    const nameEl = document.getElementById('ideCurrentFileName');
+    if (!listEl || !editorEl || !nameEl) return;
+
+    if (!this.ideFiles || !this.ideFiles.length) {
+      listEl.innerHTML = '<div style="color:#71717a;font-size:11px;">No files yet. Ask the agent to build an app!</div>';
+      nameEl.textContent = '(no file)';
+      editorEl.value = '';
+      return;
+    }
+
+    listEl.innerHTML = this.ideFiles
+      .map((f, idx) => {
+        const active = idx === this.ideActiveIndex;
+        return `
+          <div onclick="window.app.selectIdeFile(${idx})" style="padding:5px 8px;margin-bottom:4px;border-radius:4px;cursor:pointer;font-family:var(--font-mono);font-size:11px;background:${active ? '#1e293b' : 'transparent'};color:${active ? '#67e8f9' : '#d4d4d8'};border-left:2px solid ${active ? '#38bdf8' : 'transparent'};">
+            📄 ${f.name} <span style="font-size:9px;color:#71717a;">(${f.size}B)</span>
+          </div>
+        `;
+      })
+      .join('');
+
+    const current = this.ideFiles[this.ideActiveIndex] || this.ideFiles[0];
+    nameEl.textContent = current.name;
+    editorEl.value = current.content || '';
+  }
+
+  selectIdeFile(idx) {
+    this.ideActiveIndex = idx;
+    this._renderIdeModalFiles();
+  }
+
+  async saveCurrentIdeFile() {
+    if (!this.ideFiles || !this.ideFiles.length) return;
+    const current = this.ideFiles[this.ideActiveIndex] || this.ideFiles[0];
+    const content = document.getElementById('ideCodeEditor').value;
+    current.content = content;
+    current.size = content.length;
+    await fetch(`/api/agents/${encodeURIComponent(this.selectedAgentId)}/files/save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: current.name, content }),
+    });
+    const outEl = document.getElementById('ideRunOutput');
+    if (outEl) outEl.textContent = `✔ Saved ${current.name} (${content.length} bytes) to disk.`;
+    this._renderIdeModalFiles();
+  }
+
+  async runCurrentIdeFile() {
+    if (!this.ideFiles || !this.ideFiles.length) return;
+    await this.saveCurrentIdeFile();
+    const current = this.ideFiles[this.ideActiveIndex] || this.ideFiles[0];
+    const stdinEl = document.getElementById('ideStdinInput');
+    const stdin_text = stdinEl ? stdinEl.value : '';
+    const outEl = document.getElementById('ideRunOutput');
+    if (outEl) outEl.textContent = `⏳ Running ${current.name}...`;
+
+    const resp = await fetch(`/api/agents/${encodeURIComponent(this.selectedAgentId)}/files/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: current.name, stdin_text }),
+    });
+    const data = await resp.json();
+    if (outEl) {
+      outEl.textContent = `$ python ${current.name} (exit code ${data.exit_code})\n${data.output}`;
+    }
     await this.refreshState();
     await this.selectAgent(this.selectedAgentId);
   }

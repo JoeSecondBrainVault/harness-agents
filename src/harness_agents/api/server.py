@@ -120,6 +120,36 @@ class CreateGitHubRepoRequest(BaseModel):
     push_to_github: bool = True
 
 
+class SaveFileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str
+    content: str
+
+
+class RunFileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str
+    stdin_text: str = ""
+
+
+class NewProjectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_name: str
+    description: str = ""
+    auto_equip_hr: bool = True
+
+
+class HRRecommendRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_description: str
+    target_agent_id: str = "ramon"
+    auto_equip_squad: bool = False
+
+
 def create_app(manager: OfficeSessionManager | None = None) -> FastAPI:
     app = FastAPI(
         title="HarnessAgents Virtual Office & Multi-Agent Orchestrator",
@@ -244,6 +274,40 @@ def create_app(manager: OfficeSessionManager | None = None) -> FastAPI:
         if agent_id not in session_mgr.agents:
             raise HTTPException(status_code=404, detail="Agent not found")
         return session_mgr.open_agent_folder(agent_id)
+
+    @app.get("/api/agents/{agent_id}/files")
+    async def list_agent_files_route(agent_id: str) -> dict[str, object]:
+        if agent_id not in session_mgr.agents:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return session_mgr.list_project_files(agent_id)
+
+    @app.post("/api/agents/{agent_id}/files/save")
+    async def save_agent_file_route(agent_id: str, req: SaveFileRequest) -> dict[str, object]:
+        if agent_id not in session_mgr.agents:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return session_mgr.save_project_file(agent_id, req.filename, req.content)
+
+    @app.post("/api/agents/{agent_id}/files/run")
+    async def run_agent_file_route(agent_id: str, req: RunFileRequest) -> dict[str, object]:
+        if agent_id not in session_mgr.agents:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return session_mgr.run_project_file(agent_id, req.filename, req.stdin_text)
+
+    @app.post("/api/projects/new")
+    async def start_new_project_route(req: NewProjectRequest) -> dict[str, object]:
+        return session_mgr.start_new_project(
+            project_name=req.project_name,
+            description=req.description,
+            auto_equip_hr=req.auto_equip_hr,
+        )
+
+    @app.post("/api/hr/recommend")
+    async def hr_recommend_route(req: HRRecommendRequest) -> dict[str, object]:
+        return session_mgr.hr_recommend_skills(
+            project_description=req.project_description,
+            target_agent_id=req.target_agent_id,
+            auto_equip_squad=req.auto_equip_squad,
+        )
 
     @app.post("/api/messages")
     async def post_message(req: MessageRequest) -> dict[str, object]:
