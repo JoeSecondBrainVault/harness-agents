@@ -259,25 +259,49 @@ class HarnessOfficeApp {
     const pre = document.getElementById('terminalOutputPre');
     pre.style.fontSize = `${this.termFontSize}px`;
 
+    let nextText = '';
     if (this.activeInspectorTab === 'terminal') {
       const lines = cached.terminal_logs || [];
-      pre.textContent = this._stripAnsi(lines.join('\n'));
+      nextText = this._stripAnsi(lines.join('\n'));
     } else if (this.activeInspectorTab === 'git') {
-      pre.textContent = cached.git_info || 'Loading git status & diff...';
+      nextText = cached.git_info || 'Loading git status & diff...';
     } else if (this.activeInspectorTab === 'messages') {
       const msgs = cached.messages || [];
-      pre.textContent = msgs
+      nextText = msgs
         .map((m) => `[${m.channel.toUpperCase()}] ${m.sender_id} -> ${m.recipient_id}: ${m.content}`)
         .join('\n\n') || 'No inter-agent messages yet.';
     } else if (this.activeInspectorTab === 'traces') {
       const tr = cached.traces || [];
-      pre.textContent = tr
+      nextText = tr
         .map((t) => `[${t.timestamp.slice(11, 19)}] ${t.event}: ${t.detail}`)
         .join('\n') || 'No traces recorded.';
     }
 
-    const vp = document.getElementById('inspectorViewport');
-    vp.scrollTop = vp.scrollHeight;
+    if (pre.textContent !== nextText) {
+      pre.textContent = nextText;
+      const vp = document.getElementById('inspectorViewport');
+      if (vp) vp.scrollTop = vp.scrollHeight;
+    }
+  }
+
+  async copyCliText() {
+    const sel = window.getSelection ? window.getSelection().toString().trim() : '';
+    const pre = document.getElementById('terminalOutputPre');
+    const textToCopy = sel || (pre ? pre.textContent : '');
+    if (!textToCopy) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(textToCopy);
+    }
+    const btn = document.getElementById('copyCliBtn');
+    if (btn) {
+      const orig = btn.textContent;
+      btn.textContent = '✓ Copied!';
+      btn.style.color = '#a3e635';
+      setTimeout(() => {
+        btn.textContent = orig;
+        btn.style.color = '#67e8f9';
+      }, 1500);
+    }
   }
 
   _stripAnsi(str) {
@@ -456,6 +480,7 @@ class HarnessOfficeApp {
     const text = box.value.trim();
     if (!text) return;
     box.value = '';
+    this.activeInspectorTab = 'terminal';
 
     if (!queueOnly && this.officeCanvas) {
       this.officeCanvas.markAgentWorking(this.selectedAgentId, 1100);

@@ -259,9 +259,10 @@
 
       <!-- Clean Antigravity CLI Subheader -->
       <div class="pty-status-subheader" style="padding:4px 10px;background:#0d0d11;border-bottom:1px solid #1f1f26;">
-        <span style="color:#a3e635;font-weight:700;font-family:var(--font-mono);">&gt;_ antigravity-cli</span>
+        <span onclick="window.app.switchInspectorTab('terminal')" title="Click to view CLI Terminal output" style="color:#a3e635;font-weight:700;font-family:var(--font-mono);cursor:pointer;">&gt;_ antigravity-cli</span>
         <span id="inspPtyId" style="color:#71717a;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">▪ live · pty</span>
         <div style="display:flex;gap:4px;align-items:center;">
+          <button id="copyCliBtn" class="sm-btn" style="padding:1px 6px;font-size:10px;border-color:#38bdf8;color:#67e8f9;" onclick="window.app.copyCliText()" title="Copy selected text or full CLI output">📋 Copy</button>
           <button class="sm-btn" style="padding:1px 5px;" onclick="window.app.adjustFontSize(-1)">-</button>
           <span id="termFontSizeLabel" style="color:#9ca3af;font-size:10px;">12px</span>
           <button class="sm-btn" style="padding:1px 5px;" onclick="window.app.adjustFontSize(1)">+</button>
@@ -269,7 +270,7 @@
       </div>
 
       <!-- Full-Height Antigravity CLI Terminal Viewport -->
-      <div id="inspectorViewport" class="terminal-viewport" style="flex:1;padding:10px 12px;background:#09090c;overflow-y:auto;">
+      <div id="inspectorViewport" class="terminal-viewport" style="flex:1;padding:10px 12px;background:#09090c;overflow-y:auto;user-select:text;-webkit-user-select:text;cursor:text;">
         <!-- Hidden legacy metadata targets so JS references stay safe -->
         <div style="display:none;">
           <span id="mascotEngineTitle"></span>
@@ -277,7 +278,7 @@
           <span id="mascotFolderLine"></span>
           <span id="queueCountLabel"></span>
         </div>
-        <div id="terminalOutputPre" class="terminal-log-lines" style="font-family:var(--font-mono);line-height:1.5;color:#e4e4e7;white-space:pre-wrap;word-break:break-word;"></div>
+        <div id="terminalOutputPre" class="terminal-log-lines" style="font-family:var(--font-mono);line-height:1.5;color:#e4e4e7;white-space:pre-wrap;word-break:break-word;user-select:text;-webkit-user-select:text;cursor:text;"></div>
       </div>
 
       <!-- Clean Antigravity CLI Bottom Prompt Box -->

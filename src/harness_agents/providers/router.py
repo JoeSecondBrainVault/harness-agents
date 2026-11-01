@@ -90,7 +90,12 @@ class MultiModelRouter:
             if live_text:
                 provider_used = "groq-lpu"
         elif agent.provider == ProviderType.OPENROUTER and os.environ.get("OPENROUTER_API_KEY"):
-            or_model = agent.model_id if "/" in agent.model_id else "openrouter/auto"
+            or_map = {
+                "deepseek/deepseek-chat-v3-0324:free": "nvidia/nemotron-3-ultra-550b-a55b:free",
+                "qwen/qwen-2.5-coder-32b-instruct:free": "google/gemma-4-31b-it:free",
+                "meta-llama/llama-3.3-70b-instruct:free": "google/gemma-4-26b-a4b-it:free",
+            }
+            or_model = or_map.get(agent.model_id, agent.model_id if "/" in agent.model_id else "openrouter/auto")
             cli_cmd_used = f"openrouter --model {or_model}"
             live_text = await self._call_openai_compatible(
                 url="https://openrouter.ai/api/v1/chat/completions",
@@ -99,6 +104,14 @@ class MultiModelRouter:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
             )
+            if not live_text and or_model != "openrouter/auto":
+                live_text = await self._call_openai_compatible(
+                    url="https://openrouter.ai/api/v1/chat/completions",
+                    api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+                    model="openrouter/auto",
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                )
             if live_text:
                 provider_used = "openrouter"
         elif agent.provider == ProviderType.GEMINI_PRO:
@@ -296,7 +309,7 @@ class MultiModelRouter:
             "stream": False,
         }
         try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
+            async with httpx.AsyncClient(timeout=25.0) as client:
                 resp = await client.post(f"{host}/api/chat", json=payload)
                 if resp.status_code == 200:
                     data = resp.json()

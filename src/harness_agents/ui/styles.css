@@ -33,7 +33,21 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+#officeCanvas {
   user-select: none;
+  -webkit-user-select: none;
+}
+
+.terminal-viewport,
+.terminal-log-lines,
+#terminalOutputPre,
+.mini-term-body,
+#ideRunOutput {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  cursor: text;
 }
 
 /* Top Window Title & Mode Bar */
