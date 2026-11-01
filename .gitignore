@@ -1,0 +1,33 @@
+# Environment & Secrets
+.env
+.env.*
+*.pem
+*.key
+secrets.*
+
+# Python & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Local SQLite & Memory Stores
+*.db
+*.sqlite
+*.sqlite3
+.harness_data/
+
+# Node / Frontend (if any)
+node_modules/
+
+# Graphify & Obsidian Cache
+graphify-out/
+.graphifyignore
+.obsidian/

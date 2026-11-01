@@ -1,0 +1,697 @@
+"""Central Session & Virtual Office State Manager."""
+
+from __future__ import annotations
+
+import re
+import secrets
+from collections.abc import Callable
+from pathlib import Path
+
+from harness_agents.config import (
+    AgentProfile,
+    AgentStatus,
+    FloorConfig,
+    FurnitureItem,
+    HarnessLevel,
+    ProviderType,
+    get_available_models,
+    get_default_agents,
+    get_default_floor_tiles,
+    get_default_floors,
+    get_default_furniture,
+    get_provider_health,
+    utc_now_iso,
+)
+from harness_agents.harness.ecc_loader import ECCArmoryLoader
+from harness_agents.harness.injector import HarnessInjector
+from harness_agents.harness.macros import MacroRunner
+from harness_agents.memory.minilm_store import MiniLMMemoryStore
+from harness_agents.orchestration.github_org import DEFAULT_GITHUB_ORG, GitHubOrgManager
+from harness_agents.orchestration.kanban import KanbanBoard, KanbanStatus
+from harness_agents.orchestration.message_bus import MessageBus
+from harness_agents.providers.router import MultiModelRouter
+
+BLOCKED_TOOL_PATTERNS = [
+    r"rm\s+-rf\s+/",
+    r"format\s+[a-z]:",
+    r"git\s+push\s+--force",
+    r"del\s+/f\s+/s\s+/q\s+c:\\",
+    r"drop\s+database",
+]
+
+
+class OfficeSessionManager:
+    """Coordinates all virtual office agents, isometric coordinates, terminals, and 311 ECC skills."""
+
+    def __init__(
+        self,
+        data_dir: Path | None = None,
+        ecc_loader: ECCArmoryLoader | None = None,
+    ) -> None:
+        self.data_dir = data_dir or Path(
+            "C:/Users/Legion/.gemini/antigravity/scratch/harness-agents/.harness_data"
+        )
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        self.ecc_loader = ecc_loader or ECCArmoryLoader()
+        self.injector = HarnessInjector(self.ecc_loader)
+        self.router = MultiModelRouter()
+        self.memory = MiniLMMemoryStore(db_path=self.data_dir / "memory_minilm.db")
+        self.message_bus = MessageBus(db_path=self.data_dir / "messages.db")
+        self.kanban = KanbanBoard(db_path=self.data_dir / "kanban.db")
+        self.github_org = GitHubOrgManager(org_name=DEFAULT_GITHUB_ORG)
+
+        self.auto_mode: bool = True
+        self.active_floor: int = 1
+        self.floors: list[FloorConfig] = get_default_floors()
+        self.furniture: list[FurnitureItem] = get_default_furniture()
+        self.floor_tiles: dict[str, str] = get_default_floor_tiles()
+        self.agents: dict[str, AgentProfile] = {a.id: a for a in get_default_agents()}
+
+        self.terminal_logs: dict[str, list[str]] = {}
+        self.traces: dict[str, list[dict[str, object]]] = {}
+        self._event_listeners: list[Callable[[dict[str, object]], None]] = []
+
+        for agent in self.agents.values():
+            self.terminal_logs[agent.id] = self._build_welcome_banner(agent)
+            self.traces[agent.id] = [
+                {
+                    "timestamp": utc_now_iso(),
+                    "event": "session_init",
+                    "detail": f"Initialized {agent.pty_id} ({agent.model_id}) with {len(agent.equipped_skills)} ECC skills.",
+                }
+            ]
+
+    @staticmethod
+    def _build_welcome_banner(agent: AgentProfile) -> list[str]:
+        return [
+            f"● live · pty {agent.pty_id}",
+            "╭──────────────────────────────────────────────────────────────╮",
+            f"│  👾 HarnessAgents Runtime v2.0  •  {agent.name.upper():<24}│",
+            f"│  Model: {agent.model_id:<28} Provider: {agent.provider.value:<12}│",
+            f"│  Folder: {agent.workspace_path[:50]:<50} │",
+            f"│  Equipped ECC Skills: {', '.join(agent.equipped_skills)[:37]:<37} │",
+            "╰──────────────────────────────────────────────────────────────╯",
+            "> Try \"fix typecheck errors\" or dispatch a Kanban card",
+            f"ctx {agent.telemetry.context_used_tokens // 1000}k/{agent.telemetry.context_max_tokens // 1000}k (0%)",
+            f">> bypass permissions {'on' if agent.bypass_permissions else 'off'} (shift+tab to cycle)",
+        ]
+
+    def subscribe(self, callback: Callable[[dict[str, object]], None]) -> None:
+        self._event_listeners.append(callback)
+
+    def _emit(self, event_type: str, payload: dict[str, object]) -> None:
+        packet = {"type": event_type, "timestamp": utc_now_iso(), "payload": payload}
+        for cb in list(self._event_listeners):
+            try:
+                cb(packet)
+            except (RuntimeError, ValueError, TypeError, OSError) as exc:
+                self.traces.setdefault("system", []).append({"event": "listener_err", "detail": str(exc)})
+
+    def is_command_blocked(self, agent: AgentProfile, prompt_or_cmd: str) -> bool:
+        """Enforce block_tools safety guardrail on destructive operations."""
+        for pattern in BLOCKED_TOOL_PATTERNS:
+            if re.search(pattern, prompt_or_cmd, flags=re.IGNORECASE):
+                return True
+        return bool(
+            agent.block_tools
+            and any(
+                kw in prompt_or_cmd.lower()
+                for kw in ["rm ", "del ", "delete ", "drop ", "format ", "kill "]
+            )
+        )
+
+    async def send_prompt(
+        self,
+        agent_id: str,
+        prompt: str,
+        is_steer: bool = False,
+    ) -> dict[str, object]:
+        """Dispatch a prompt or steering instruction to an agent and animate them in the office."""
+        agent = self.agents.get(agent_id)
+        if not agent:
+            raise ValueError(f"Unknown agent: {agent_id}")
+
+        clean_prompt = prompt.strip()
+        if not clean_prompt:
+            return {"status": "ignored", "reason": "empty prompt"}
+
+        # 1. Check Tool Block Guardrail
+        if self.is_command_blocked(agent, clean_prompt):
+            agent.status = AgentStatus.BLOCKED
+            agent.speech_bubble = "Blocked by Safety Gate! 🚫"
+            warn_line = f"\x1b[31m[BLOCK TOOLS GUARDRAIL]\x1b[0m Blocked destructive command: `{clean_prompt}`"
+            self.terminal_logs[agent.id].append(warn_line)
+            self._record_trace(agent.id, "tool_blocked", clean_prompt)
+            self._emit("agent_updated", {"agent": agent.model_dump(), "log": warn_line})
+            return {"status": "blocked", "agent": agent.model_dump(), "output": warn_line}
+
+        # 2. Check Laya auto-skill recommendation and auto-equip any strongly matched ECC skill
+        auto_skills = self.ecc_loader.auto_recommend_skills(clean_prompt, limit=2)
+        for sk in auto_skills:
+            if sk not in agent.equipped_skills and len(agent.equipped_skills) < 6:
+                agent.equipped_skills.append(sk)
+
+        # 3. Walk avatar to their assigned desk and set status to WORKING
+        agent.target_x = float(agent.desk_x)
+        agent.target_y = float(agent.desk_y)
+        agent.current_x = float(agent.desk_x)
+        agent.current_y = float(agent.desk_y)
+        agent.status = AgentStatus.WORKING
+        agent.collaborating_with = None
+        prefix = "[STEER]" if is_steer else ">"
+        agent.speech_bubble = "Steering..." if is_steer else f"Working: {clean_prompt[:16]}..."
+
+        user_line = f"\n\x1b[33m{prefix} {clean_prompt}\x1b[0m"
+        self.terminal_logs[agent.id].append(user_line)
+        self._emit("agent_updated", {"agent": agent.model_dump(), "log": user_line})
+
+        # 4. Recall relevant context from memory - minilm
+        recalled = self.memory.recall(clean_prompt, limit=3)
+        snippets = [str(item["content"]) for item in recalled]
+
+        # 5. Assemble Harness Prompt (off | lite | full | ultra)
+        sys_prompt = self.injector.build_system_prompt(agent, memory_snippets=snippets)
+
+        # 6. Execute via MultiModelRouter
+        gen = await self.router.generate(
+            agent=agent,
+            system_prompt=sys_prompt,
+            user_prompt=clean_prompt,
+        )
+
+        # 7. Update Agent Telemetry & Memory
+        agent.telemetry.tokens_in += gen.tokens_in
+        agent.telemetry.tokens_out += gen.tokens_out
+        agent.telemetry.turns += 1
+        agent.telemetry.agent_time_sec = round(agent.telemetry.agent_time_sec + gen.elapsed_sec, 2)
+        agent.telemetry.context_used_tokens = min(
+            agent.telemetry.context_max_tokens,
+            agent.telemetry.context_used_tokens + gen.tokens_in + gen.tokens_out,
+        )
+        agent.telemetry.tokens_per_sec = round(gen.tokens_out / max(0.05, gen.elapsed_sec), 1)
+
+        self.terminal_logs[agent.id].append(gen.text)
+        self.memory.remember(agent_id=agent.id, content=f"{clean_prompt} -> {gen.speech_summary}", topic=agent.department)
+        self._record_trace(
+            agent.id,
+            "turn_completed",
+            f"Model={gen.model_used} ({gen.provider_used}) +{gen.tokens_out} tok in {gen.elapsed_sec}s",
+        )
+
+        # 8. If prompt starts a new project or asks to create a repo, auto-create in JoeSecondBrainVault!
+        repo_slug = self._extract_new_project_repo_slug(clean_prompt)
+        if repo_slug and not agent.block_tools:
+            vis = "public" if "public" in clean_prompt.lower() else "private"
+            self.create_and_push_org_repo(
+                repo_name=repo_slug,
+                description=clean_prompt,
+                agent_id=agent.id,
+                visibility=vis,
+                push_to_github=True,
+            )
+
+        # 9. If Ramon (Hive Lead) ran a prompt, automatically coordinate and run Ada, Ken, Mira & Sentinel
+        if agent.is_hive_lead and not is_steer:
+            self.send_1to1_message(
+                sender_id=agent.id,
+                recipient_id="ada",
+                content=f"[Hive Dispatch] Implement UI track for: {clean_prompt[:60]}",
+                channel="hive",
+            )
+            self.send_1to1_message(
+                sender_id=agent.id,
+                recipient_id="ken",
+                content=f"[Hive Dispatch] Implement API track for: {clean_prompt[:60]}",
+                channel="hive",
+            )
+            if self.auto_mode:
+                for worker_id, worker_task in [
+                    ("ada", f"Implement Frontend UI for: {clean_prompt[:70]}"),
+                    ("ken", f"Implement Backend API & DB schema for: {clean_prompt[:70]}"),
+                    ("mira", f"Run Pytest TDD suite for: {clean_prompt[:70]}"),
+                    ("sentinel", f"Run OWASP ASVS 5.0.0 & Bandit security audit for: {clean_prompt[:70]}"),
+                ]:
+                    if worker_id in self.agents:
+                        w_agent = self.agents[worker_id]
+                        w_out = self.router._synthesize_agent_execution(w_agent, worker_task)
+                        self.terminal_logs[worker_id].append(w_out)
+                        w_agent.telemetry.turns += 1
+                        w_agent.telemetry.tokens_out += 64
+                        w_agent.speech_bubble = self.router._extract_speech_bubble(w_agent, worker_task)
+                        self._record_trace(worker_id, "hive_auto_exec", worker_task)
+
+        # 9. Respect stop_after_step or return to IDLE
+        agent.status = AgentStatus.IDLE
+        agent.speech_bubble = gen.speech_summary
+
+        # Process next queued prompt if stop_after_step is False
+        if agent.prompt_queue and not agent.stop_after_step:
+            next_queued = agent.prompt_queue.pop(0)
+            await self.send_prompt(agent.id, next_queued)
+
+        self._emit("agent_updated", {"agent": agent.model_dump(), "log": gen.text})
+        return {
+            "status": "ok",
+            "agent": agent.model_dump(),
+            "output": gen.text,
+            "telemetry": agent.telemetry.model_dump(),
+        }
+
+    def enqueue_prompt(self, agent_id: str, prompt: str) -> AgentProfile:
+        agent = self.agents[agent_id]
+        agent.prompt_queue.append(prompt.strip())
+        agent.speech_bubble = f"Queued ({len(agent.prompt_queue)})"
+        self._record_trace(agent_id, "prompt_queued", prompt.strip())
+        self._emit("agent_updated", {"agent": agent.model_dump()})
+        return agent
+
+    def send_1to1_message(
+        self,
+        sender_id: str,
+        recipient_id: str,
+        content: str,
+        channel: str = "1:1",
+    ) -> dict[str, object]:
+        """Send a 1:1 or Hive note and physically walk the sender to the recipient's desk in the office."""
+        msg = self.message_bus.send_message(
+            sender_id=sender_id,
+            recipient_id=recipient_id,
+            content=content,
+            channel=channel,
+        )
+        sender = self.agents.get(sender_id)
+        recipient = self.agents.get(recipient_id)
+
+        if sender and recipient:
+            if channel == "hive":
+                # Keep both sender and recipient seated in their chairs at their computer desks!
+                sender.target_x = float(sender.desk_x)
+                sender.target_y = float(sender.desk_y)
+                recipient.target_x = float(recipient.desk_x)
+                recipient.target_y = float(recipient.desk_y)
+            else:
+                # For explicit 1:1 desk visit, walk to recipient's desk
+                sender.target_x = float(max(1, recipient.desk_x - 1))
+                sender.target_y = float(recipient.desk_y)
+            sender.collaborating_with = recipient.id
+            sender.speech_bubble = f"@{recipient.name}: {content[:18]}..."
+            recipient.speech_bubble = f"Coding: {content[:16]}..."
+            log_line = f"\x1b[35m[💬 {channel.upper()} {sender.name} -> {recipient.name}]\x1b[0m {content}"
+            self.terminal_logs[sender.id].append(log_line)
+            self.terminal_logs[recipient.id].append(log_line)
+            self._record_trace(sender.id, f"msg_{channel}", f"To {recipient.name}: {content}")
+        elif recipient:
+            recipient.speech_bubble = f"Note: {content[:18]}..."
+            log_line = f"\x1b[35m[💬 NOTE -> {recipient.name}]\x1b[0m {content}"
+            self.terminal_logs[recipient.id].append(log_line)
+
+        self._emit("message_sent", {"message": msg.model_dump()})
+        return msg.model_dump()
+
+    def equip_skill(self, agent_id: str, skill_id: str) -> AgentProfile:
+        agent = self.agents[agent_id]
+        if skill_id not in agent.equipped_skills:
+            agent.equipped_skills.append(skill_id)
+            agent.speech_bubble = f"+Skill: {skill_id}"
+            log_line = f"\x1b[32m[ECC ARMORY]\x1b[0m Equipped skill cartridge `{skill_id}` on {agent.name}."
+            self.terminal_logs[agent_id].append(log_line)
+            self._record_trace(agent_id, "skill_equipped", skill_id)
+            self._emit("agent_updated", {"agent": agent.model_dump(), "log": log_line})
+        return agent
+
+    def unequip_skill(self, agent_id: str, skill_id: str) -> AgentProfile:
+        agent = self.agents[agent_id]
+        if skill_id in agent.equipped_skills:
+            agent.equipped_skills.remove(skill_id)
+            log_line = f"\x1b[33m[ECC ARMORY]\x1b[0m Unequipped skill `{skill_id}` from {agent.name}."
+            self.terminal_logs[agent_id].append(log_line)
+            self._record_trace(agent_id, "skill_unequipped", skill_id)
+            self._emit("agent_updated", {"agent": agent.model_dump(), "log": log_line})
+        return agent
+
+    def update_agent_settings(
+        self,
+        agent_id: str,
+        model_id: str | None = None,
+        provider: ProviderType | None = None,
+        harness_level: HarnessLevel | None = None,
+        block_tools: bool | None = None,
+        stop_after_step: bool | None = None,
+        floor: int | None = None,
+        workspace_path: str | None = None,
+        speech_bubble: str | None = None,
+        target_x: float | None = None,
+        target_y: float | None = None,
+    ) -> AgentProfile:
+        agent = self.agents[agent_id]
+        if model_id is not None:
+            agent.model_id = model_id
+            # Match provider automatically from catalog if not explicitly provided
+            if provider is None:
+                for entry in get_available_models():
+                    if entry.id == model_id:
+                        agent.provider = entry.provider
+                        break
+            agent.speech_bubble = f"Model: {model_id}"
+        if provider is not None:
+            agent.provider = provider
+        if harness_level is not None:
+            agent.harness_level = harness_level
+            agent.speech_bubble = f"Harness: {harness_level.value.upper()}"
+        if block_tools is not None:
+            agent.block_tools = block_tools
+            agent.speech_bubble = "Tools Blocked 🚫" if block_tools else "Tools Unblocked ✓"
+        if stop_after_step is not None:
+            agent.stop_after_step = stop_after_step
+        if floor is not None:
+            agent.floor = floor
+            agent.speech_bubble = f"Moved to Floor {floor}"
+        if workspace_path is not None:
+            agent.workspace_path = workspace_path
+        if speech_bubble is not None:
+            agent.speech_bubble = speech_bubble
+        if target_x is not None and target_y is not None:
+            agent.target_x = target_x
+            agent.target_y = target_y
+            agent.current_x = target_x
+            agent.current_y = target_y
+
+        self._record_trace(agent_id, "settings_updated", f"model={agent.model_id} harness={agent.harness_level.value}")
+        self._emit("agent_updated", {"agent": agent.model_dump()})
+        return agent
+
+    def add_agent(
+        self,
+        name: str,
+        role: str,
+        department: str = "HarnessAgents",
+        model_id: str = "gemini-3.8-flash",
+        floor: int = 1,
+        equipped_skills: list[str] | None = None,
+    ) -> AgentProfile:
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or f"agent-{len(self.agents) + 1}"
+        if slug in self.agents:
+            slug = f"{slug}-{secrets.token_hex(2)}"
+
+        # Pick an unoccupied desk coordinate on the floor
+        existing_on_floor = [a for a in self.agents.values() if a.floor == floor]
+        idx = len(existing_on_floor)
+        desk_x = 3 + (idx % 4) * 3
+        desk_y = 3 + (idx // 4) * 3
+
+        provider = ProviderType.GEMINI_PRO
+        for entry in get_available_models():
+            if entry.id == model_id:
+                provider = entry.provider
+                break
+
+        palette = ["#10b981", "#f97316", "#6366f1", "#14b8a6", "#f43f5e", "#8b5cf6"]
+        color = palette[idx % len(palette)]
+
+        profile = AgentProfile(
+            id=slug,
+            name=name.lower(),
+            display_title=f"{name.lower()} — {role.lower()}",
+            role=role,
+            department=department,
+            workspace_path=str(Path("C:/Users/Legion/.gemini/antigravity/scratch").resolve()),
+            floor=floor,
+            desk_x=desk_x,
+            desk_y=desk_y,
+            current_x=float(desk_x),
+            current_y=float(desk_y),
+            target_x=float(desk_x),
+            target_y=float(desk_y),
+            avatar_color=color,
+            shirt_color=color,
+            star_color="#facc15",
+            provider=provider,
+            model_id=model_id,
+            equipped_skills=equipped_skills or self.ecc_loader.auto_recommend_skills(role, limit=2),
+            speech_bubble="Ready to work!",
+            pty_id=f"pty-{slug}-{secrets.token_hex(3)}",
+        )
+        self.agents[profile.id] = profile
+        self.terminal_logs[profile.id] = self._build_welcome_banner(profile)
+        self.traces[profile.id] = [
+            {
+                "timestamp": utc_now_iso(),
+                "event": "agent_spawned",
+                "detail": f"Created {profile.name} on Floor {floor} at ({desk_x}, {desk_y}).",
+            }
+        ]
+        # Add a desk for the new agent
+        self.furniture.append(
+            FurnitureItem(
+                id=f"desk-{profile.id}",
+                kind="desk",
+                label=f"{profile.name.title()} Workstation",
+                floor=floor,
+                grid_x=desk_x,
+                grid_y=desk_y,
+                color=color,
+                assigned_agent_id=profile.id,
+            )
+        )
+        self._emit("agent_added", {"agent": profile.model_dump()})
+        return profile
+
+    def add_furniture(
+        self,
+        kind: str,
+        label: str,
+        floor: int,
+        grid_x: int,
+        grid_y: int,
+        color: str = "#38bdf8",
+        rotation: int = 0,
+    ) -> FurnitureItem:
+        item = FurnitureItem(
+            id=f"item-{kind}-{secrets.token_hex(3)}",
+            kind=kind,
+            label=label,
+            floor=floor,
+            grid_x=grid_x,
+            grid_y=grid_y,
+            rotation=rotation % 4,
+            color=color,
+        )
+        self.furniture.append(item)
+        self._emit("furniture_added", {"item": item.model_dump()})
+        return item
+
+    def move_furniture(
+        self,
+        item_id: str,
+        grid_x: int | None = None,
+        grid_y: int | None = None,
+        rotation: int | None = None,
+        kind: str | None = None,
+    ) -> FurnitureItem | None:
+        for item in self.furniture:
+            if item.id == item_id:
+                if grid_x is not None:
+                    item.grid_x = grid_x
+                if grid_y is not None:
+                    item.grid_y = grid_y
+                if rotation is not None:
+                    item.rotation = rotation % 4
+                if kind is not None:
+                    item.kind = kind
+                # If this desk belongs to an agent, move the agent's assigned desk coordinates too!
+                if item.assigned_agent_id and item.assigned_agent_id in self.agents:
+                    ag = self.agents[item.assigned_agent_id]
+                    ag.desk_x = item.grid_x
+                    ag.desk_y = item.grid_y
+                self._emit("furniture_moved", {"item": item.model_dump()})
+                return item
+        return None
+
+    def rotate_furniture(self, item_id: str) -> FurnitureItem | None:
+        for item in self.furniture:
+            if item.id == item_id:
+                if item.kind == "wall_ew":
+                    item.kind = "wall_ns"
+                elif item.kind == "wall_ns":
+                    item.kind = "wall_ew"
+                item.rotation = (item.rotation + 1) % 4
+                self._emit("furniture_rotated", {"item": item.model_dump()})
+                return item
+        return None
+
+    def set_floor_tile(self, floor: int, grid_x: int, grid_y: int, tile_style: str) -> str:
+        key = f"{floor}:{grid_x},{grid_y}"
+        if tile_style in ("wood", "default", ""):
+            self.floor_tiles.pop(key, None)
+        else:
+            self.floor_tiles[key] = tile_style
+        self._emit("floor_tile_updated", {"key": key, "style": tile_style})
+        return tile_style
+
+    def delete_furniture(self, item_id: str) -> bool:
+        before = len(self.furniture)
+        self.furniture = [f for f in self.furniture if f.id != item_id]
+        deleted = len(self.furniture) < before
+        if deleted:
+            self._emit("furniture_deleted", {"id": item_id})
+        return deleted
+
+    def add_floor(self, name: str | None = None) -> FloorConfig:
+        next_num = len(self.floors) + 1
+        fl = FloorConfig(
+            floor_number=next_num,
+            name=name or f"Floor {next_num} — Expansion Lab",
+            max_agents=15,
+        )
+        self.floors.append(fl)
+        return fl
+
+    def trigger_celebration(self, message: str = "SWELDO NA! 🎉") -> dict[str, object]:
+        """Broadcast a celebration speech bubble across all agents on the active floor."""
+        for agent in self.agents.values():
+            agent.speech_bubble = message
+        self._emit("celebration", {"message": message})
+        return {"status": "ok", "message": message}
+
+    def run_macro(self, agent_id: str, macro_name: str) -> dict[str, object]:
+        agent = self.agents[agent_id]
+        logs = self.terminal_logs.get(agent_id, [])
+        res = MacroRunner.execute_macro(macro_name, agent, logs)
+
+        if "terminal_output" in res:
+            self.terminal_logs[agent_id].append(str(res["terminal_output"]))
+        if "speech_bubble" in res:
+            agent.speech_bubble = str(res["speech_bubble"])
+        if macro_name.lower() == "board" and "tasks_created" in res:
+            for title in res["tasks_created"]:  # type: ignore[union-attr]
+                self.kanban.create_task(
+                    title=str(title),
+                    description=f"Auto-extracted from {agent.name} terminal via Board macro.",
+                    assigned_agent_id=agent.id,
+                    recommended_skills=agent.equipped_skills[:2],
+                )
+
+        self._record_trace(agent_id, f"macro_{macro_name}", str(res.get("summary", "")))
+        self._emit("agent_updated", {"agent": agent.model_dump(), "macro_result": res})
+        return res
+
+    async def run_auto_kanban_tick(self) -> list[dict[str, object]]:
+        """When Auto-Mode is ON, pull BACKLOG tasks and dispatch them to idle matching agents."""
+        if not self.auto_mode:
+            return []
+        dispatched: list[dict[str, object]] = []
+        tasks = self.kanban.list_tasks()
+        for task in tasks:
+            if task.status != KanbanStatus.BACKLOG:
+                continue
+            target_agent: AgentProfile | None = None
+            if task.assigned_agent_id and task.assigned_agent_id in self.agents:
+                cand = self.agents[task.assigned_agent_id]
+                if cand.status == AgentStatus.IDLE:
+                    target_agent = cand
+            else:
+                for cand in self.agents.values():
+                    if cand.status == AgentStatus.IDLE:
+                        target_agent = cand
+                        break
+            if target_agent:
+                self.kanban.update_task(
+                    task.id,
+                    status=KanbanStatus.IN_PROGRESS,
+                    assigned_agent_id=target_agent.id,
+                )
+                for sk in task.recommended_skills:
+                    self.equip_skill(target_agent.id, sk)
+                res = await self.send_prompt(
+                    target_agent.id,
+                    f"[Kanban #{task.id}] {task.title}: {task.description}",
+                )
+                self.kanban.update_task(task.id, status=KanbanStatus.DONE)
+                dispatched.append({"task_id": task.id, "agent_id": target_agent.id, "result": res})
+        return dispatched
+
+    def _record_trace(self, agent_id: str, event: str, detail: str) -> None:
+        self.traces.setdefault(agent_id, []).append(
+            {
+                "timestamp": utc_now_iso(),
+                "event": event,
+                "detail": detail,
+            }
+        )
+
+    @staticmethod
+    def _extract_new_project_repo_slug(prompt: str) -> str | None:
+        """Detect 'create repo X', 'new project X', 'start a project for X', etc."""
+        explicit = re.search(
+            r"(?:create\s+repo|new\s+repo|github\s+repo|called|named)\s+([a-zA-Z0-9_-]{3,45})",
+            prompt,
+            flags=re.IGNORECASE,
+        )
+        if explicit:
+            return explicit.group(1).lower()
+
+        project_intent = re.search(
+            r"(?:start|create|build|make)\s+(?:a\s+)?(?:new\s+)?(?:project|repo|repository|app|system|website)\s+(?:for\s+|about\s+|called\s+)?([a-zA-Z0-9\s_-]{3,45})",
+            prompt,
+            flags=re.IGNORECASE,
+        )
+        if project_intent:
+            raw_words = re.findall(r"[a-z0-9]+", project_intent.group(1).lower())
+            stop_words = {"a", "an", "the", "with", "using", "and", "in", "on", "to", "for", "that"}
+            filtered = [w for w in raw_words if w not in stop_words][:4]
+            if filtered:
+                return "-".join(filtered)
+        return None
+
+    def create_and_push_org_repo(
+        self,
+        repo_name: str,
+        description: str = "",
+        agent_id: str = "ramon",
+        visibility: str = "private",
+        push_to_github: bool = True,
+    ) -> dict[str, object]:
+        """Scaffold a real project workspace and create/push the repo to JoeSecondBrainVault."""
+        agent = self.agents.get(agent_id) or next(iter(self.agents.values()))
+        if agent.block_tools:
+            raise PermissionError(f"Agent {agent.name} has block_tools enabled.")
+
+        res = self.github_org.scaffold_and_push_repo(
+            repo_name=repo_name,
+            task_description=description or f"Multi-agent project built by {agent.name}",
+            agent_name=agent.name,
+            visibility=visibility,
+            push_to_github=push_to_github,
+        )
+
+        # Update squad workspace path to point at the newly created repo
+        for peer_id in ("ramon", "ada", "ken", "mira", "sentinel"):
+            if peer_id in self.agents:
+                self.agents[peer_id].workspace_path = res.local_path
+                self.agents[peer_id].department = f"{res.org}/{res.repo_name}"
+                self.terminal_logs[peer_id].append(res.terminal_log)
+
+        agent.speech_bubble = f"Pushed {res.repo_name}! 🐙"
+        self._record_trace(agent.id, "github_repo_created", f"{res.repo_url} ({res.status})")
+        self._emit("repo_created", res.model_dump())
+        return res.model_dump()
+
+    def full_state_snapshot(self) -> dict[str, object]:
+        return {
+            "version": "2.0.0",
+            "github_org": self.github_org.org_name,
+            "github_org_url": f"https://github.com/{self.github_org.org_name}",
+            "auto_mode": self.auto_mode,
+            "active_floor": self.active_floor,
+            "floors": [f.model_dump() for f in self.floors],
+            "furniture": [item.model_dump() for item in self.furniture],
+            "floor_tiles": self.floor_tiles,
+            "agents": [a.model_dump() for a in self.agents.values()],
+            "models": [m.model_dump() for m in get_available_models()],
+            "provider_health": get_provider_health(),
+            "ecc_stats": self.ecc_loader.stats(),
+            "memory_count": self.memory.count(),
+            "kanban": [t.model_dump() for t in self.kanban.list_tasks()],
+            "recent_messages": self.message_bus.list_messages(limit=30),
+        }
