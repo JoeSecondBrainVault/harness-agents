@@ -767,6 +767,15 @@ class HarnessOfficeApp {
 
   async openGitHubModal() {
     document.getElementById('githubOrgModal').classList.add('open');
+    const agent = (this.state && (this.state.agents || []).find((a) => a.id === this.selectedAgentId)) || null;
+    const repoInp = document.getElementById('ghRepoName');
+    if (repoInp && !repoInp.value.trim() && agent && agent.workspace_path) {
+      const parts = agent.workspace_path.replace(/\\/g, '/').split('/').filter(Boolean);
+      const last = parts[parts.length - 1];
+      if (last && last !== 'projects' && last !== 'scratch') {
+        repoInp.value = last;
+      }
+    }
     const listEl = document.getElementById('ghExistingReposList');
     listEl.textContent = 'Fetching repositories from https://github.com/JoeSecondBrainVault ...';
     try {

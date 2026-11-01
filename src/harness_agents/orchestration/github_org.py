@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 DEFAULT_GITHUB_ORG = "JoeSecondBrainVault"
-PROJECTS_BASE_DIR = Path("C:/Users/Legion/.gemini/antigravity/scratch")
+PROJECTS_BASE_DIR = Path("C:/Users/Legion/.gemini/antigravity/scratch/projects")
 
 SAFE_GITIGNORE = """# Secrets & Environment
 .env

@@ -659,9 +659,14 @@ class OfficeSessionManager:
         if not code_blocks and not slug:
             return ""
 
-        folder_slug = slug or "agent-workspace"
-        projects_base = Path("C:/Users/Legion/.gemini/antigravity/scratch/projects")
-        project_dir = (projects_base / folder_slug).resolve()
+        projects_base = Path("C:/Users/Legion/.gemini/antigravity/scratch/projects").resolve()
+        current_wp = Path(agent.workspace_path).resolve()
+        if current_wp.parent == projects_base and current_wp != projects_base:
+            project_dir = current_wp
+            folder_slug = project_dir.name
+        else:
+            folder_slug = slug or "agent-workspace"
+            project_dir = (projects_base / folder_slug).resolve()
         project_dir.mkdir(parents=True, exist_ok=True)
 
         # Point the agent (and squad) directly to this project folder so [<> IDE] & [📁 open] open it!
