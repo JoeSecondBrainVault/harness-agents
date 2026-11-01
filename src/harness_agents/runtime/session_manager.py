@@ -1092,7 +1092,7 @@ class OfficeSessionManager:
 
         if file_path:
             p = Path(file_path)
-            if p.exists():
+            if p.is_absolute() and p.exists():
                 target_dir = p.parent if p.is_file() else p
                 for peer in self.agents.values():
                     peer.workspace_path = str(target_dir.resolve())
