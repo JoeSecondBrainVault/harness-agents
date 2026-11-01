@@ -64,8 +64,12 @@ class HarnessInjector:
             )
 
         parts.append(
-            "\n## Inter-Agent Collaboration Protocol\n"
-            "- Use `@agent_id: <message>` to send a 1:1 note to a teammate (ramon, ada, ken, mira, sentinel, rogelio).\n"
+            "\n## Code Generation & File Saving Protocol (MANDATORY)\n"
+            "- Whenever the user asks to build, create, make, or plan an app/script/feature, ALWAYS include:\n"
+            "  1. A concise 3-5 bullet implementation plan.\n"
+            "  2. The COMPLETE, runnable source code inside a fenced code block (e.g. ```python ... ``` or ```html ... ```) "
+            "starting with a filename comment on line 1 (e.g. `# filename: calculator.py` or `<!-- filename: index.html -->`).\n"
+            "- Never stop at just a plan when the user wants an app built—always provide the full working code block in the same reply so HarnessAgents saves the file to disk immediately.\n"
             "- Keep outputs high-craft with zero placeholder TODOs."
         )
 

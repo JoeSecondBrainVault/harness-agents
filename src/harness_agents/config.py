@@ -34,6 +34,7 @@ def bootstrap_local_credentials() -> dict[str, str]:
                     "GEMINI_API_KEY",
                     "GOOGLE_API_KEY",
                     "GROQ_API_KEY",
+                    "OPENROUTER_API_KEY",
                     "GITHUB_TOKEN",
                     "GH_TOKEN",
                     "EVE_GEMINI_API_KEY",
@@ -45,7 +46,7 @@ def bootstrap_local_credentials() -> dict[str, str]:
                     elif key == "EVE_GROQ_API_KEY" and not os.environ.get("GROQ_API_KEY"):
                         os.environ["GROQ_API_KEY"] = val
                         sources["GROQ_API_KEY"] = f"Loaded from {env_path.parent.name}/.env"
-                    elif not os.environ.get(key):
+                    elif not os.environ.get(key) or env_path.parent.name == "harness-agents":
                         os.environ[key] = val
                         sources[key] = f"Loaded from {env_path.parent.name}/.env"
         except OSError:
@@ -87,6 +88,7 @@ class ProviderType(str, Enum):
     GEMINI_PRO = "gemini_pro"
     GITHUB_STUDENT = "github_student"
     GROQ = "groq"
+    OPENROUTER = "openrouter"
     OLLAMA_LOCAL = "ollama_local"
 
 
@@ -311,12 +313,51 @@ def get_available_models() -> list[ModelCatalogEntry]:
             cost_per_1k=0.0,
             description="Installed 14B local coding model on your Ollama daemon.",
         ),
+        # 5. OpenRouter Multi-Model Gateway
+        ModelCatalogEntry(
+            id="openrouter/auto",
+            label="OpenRouter Auto (Best Available Model)",
+            provider=ProviderType.OPENROUTER,
+            context_window=128000,
+            speed_label="Smart Route",
+            cost_per_1k=0.0,
+            description="Automatically routes to the best OpenRouter coding model.",
+        ),
+        ModelCatalogEntry(
+            id="deepseek/deepseek-chat-v3-0324:free",
+            label="DeepSeek V3 0324 (OpenRouter Free)",
+            provider=ProviderType.OPENROUTER,
+            context_window=128000,
+            speed_label="Fast Cloud",
+            cost_per_1k=0.0,
+            description="High-craft DeepSeek V3 coding model via OpenRouter.",
+        ),
+        ModelCatalogEntry(
+            id="qwen/qwen-2.5-coder-32b-instruct:free",
+            label="Qwen 2.5 Coder 32B (OpenRouter Free)",
+            provider=ProviderType.OPENROUTER,
+            context_window=128000,
+            speed_label="Fast Cloud",
+            cost_per_1k=0.0,
+            description="Specialized 32B coding model via OpenRouter.",
+        ),
+        ModelCatalogEntry(
+            id="meta-llama/llama-3.3-70b-instruct:free",
+            label="Llama 3.3 70B Instruct (OpenRouter Free)",
+            provider=ProviderType.OPENROUTER,
+            context_window=128000,
+            speed_label="Fast Cloud",
+            cost_per_1k=0.0,
+            description="Meta Llama 3.3 70B via OpenRouter.",
+        ),
     ]
 
 
 def get_default_agents() -> list[AgentProfile]:
     """Create the default 6 specialized agents on Floor 1 matching the user's screenshot & stack."""
-    default_workspace = str(Path("C:/Users/Legion/.gemini/antigravity/scratch").resolve())
+    projects_root = Path("C:/Users/Legion/.gemini/antigravity/scratch/projects")
+    projects_root.mkdir(parents=True, exist_ok=True)
+    default_workspace = str(projects_root.resolve())
     return [
         AgentProfile(
             id="ramon",
@@ -824,6 +865,7 @@ def get_provider_health() -> dict[str, dict[str, object]]:
     has_gemini = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
     has_github = bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
     has_groq = bool(os.environ.get("GROQ_API_KEY"))
+    has_openrouter = bool(os.environ.get("OPENROUTER_API_KEY"))
     return {
         ProviderType.GEMINI_PRO.value: {
             "name": "Gemini Pro Suite (Argon / Opus 5.5 / Sonnet 5.5 / Flash)",
@@ -848,6 +890,14 @@ def get_provider_health() -> dict[str, dict[str, object]]:
             "source": CREDENTIAL_SOURCES.get("GROQ_API_KEY", "Environment / In-App"),
             "models_count": 3,
             "cost": "$0.00 (Free Tier)",
+        },
+        ProviderType.OPENROUTER.value: {
+            "name": "OpenRouter Multi-Model Gateway",
+            "configured": has_openrouter,
+            "env_key_present": has_openrouter,
+            "source": CREDENTIAL_SOURCES.get("OPENROUTER_API_KEY", "Environment / In-App"),
+            "models_count": 4,
+            "cost": "$0.00 (Free Models)",
         },
         ProviderType.OLLAMA_LOCAL.value: {
             "name": "Local RTX 4060 Ollama (qwen7b-rtx / qwen2.5-coder:7b & 14b)",

@@ -28,7 +28,7 @@
       <button class="hud-btn sweldo-btn" style="padding:3px 9px;" onclick="window.app.openGitHubModal()" title="Create or Push Repo in https://github.com/JoeSecondBrainVault">🐙 JoeSecondBrainVault</button>
       <div class="provider-pills">
         <span class="prov-pill" title="Gemini 4 Argon, Opus 5.5, Sonnet 5.5, Flash 3.8"><span class="prov-dot"></span>Gemini Pro Suite</span>
-        <span class="prov-pill" title="GitHub Student Developer Pack (Copilot Pro + Models)"><span class="prov-dot"></span>GitHub Student Pack</span>
+        <span class="prov-pill" title="OpenRouter Unified API (Auto, DeepSeek V3, Qwen 2.5 Coder 32B, Llama 3.3 70B)"><span class="prov-dot"></span>OpenRouter</span>
         <span class="prov-pill" title="Groq LPU High-Speed Inference"><span class="prov-dot"></span>Groq LPU</span>
         <span class="prov-pill" title="Local RTX 4060 Ollama (Qwen-7B-RTX + Laya + MiniLM)"><span class="prov-dot"></span>RTX 4060 Local</span>
       </div>
@@ -179,133 +179,115 @@
       </div>
     </div>
 
-    <!-- Right Inspector Panel -->
-    <aside class="right-inspector">
+    <!-- Right Inspector Panel (Clean Antigravity CLI Layout) -->
+    <aside class="right-inspector" style="display:flex;flex-direction:column;">
       <!-- Agent Top Bar -->
-      <div class="inspector-header">
-        <div class="inspector-agent-id">
+      <div class="inspector-header" style="padding:8px 10px;border-bottom:1px solid #27272f;">
+        <div class="inspector-agent-id" style="min-width:0;flex:1;">
           <div id="inspAvatar" class="inspector-avatar-box">🧑‍💻</div>
-          <div class="inspector-title-col">
-            <div id="inspAgentTitle" class="inspector-name-row">rogelio - hr &amp; recruitment</div>
-            <div class="inspector-sub-row">
+          <div class="inspector-title-col" style="min-width:0;flex:1;">
+            <div id="inspAgentTitle" class="inspector-name-row" style="font-size:13px;">ramon — hive lead &amp; architect</div>
+            <div class="inspector-sub-row" style="display:flex;align-items:center;gap:6px;margin-top:2px;">
               <span id="inspStatusPill" class="status-pill">idle</span>
-              <span id="inspWorkspacePath" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">F:\.Folder Redirection\Video\SAMPLE</span>
+              <span id="inspWorkspacePath" onclick="window.app.openAgentFolder()" title="Click to open project folder in File Explorer" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;color:#67e8f9;font-size:10px;font-family:var(--font-mono);text-decoration:underline dotted;">📂 C:\Users\Legion\.gemini\antigravity\scratch\projects</span>
             </div>
           </div>
         </div>
-        <div class="header-btn-group">
-          <button class="sm-btn" onclick="window.app.promptSpeechBubble()" title="Set Custom Speech Bubble">💬 edit</button>
-          <button class="sm-btn" onclick="window.app.runMacro('review')" title="Run IDE Code Review">&lt;&gt; IDE</button>
-          <button class="sm-btn" onclick="window.app.switchStageView('kanban')" title="Open ECC Skills & Kanban">📂 open</button>
+        <div class="header-btn-group" style="display:flex;gap:4px;flex-shrink:0;">
+          <button class="sm-btn" style="border-color:#38bdf8;color:#67e8f9;font-weight:700;" onclick="window.app.openAgentIDE()" title="Open this agent's project folder in Antigravity IDE / VS Code">&lt;&gt; IDE</button>
+          <button class="sm-btn" style="border-color:#fde047;color:#fde047;" onclick="window.app.openAgentFolder()" title="Open this agent's project folder in Windows Explorer">📁 open</button>
+          <button id="toggleToolsBtn" class="sm-btn" onclick="window.app.toggleAdvancedDrawer()" title="Show/Hide Advanced Skills, Tabs &amp; Telemetry">⚙️ Tools</button>
         </div>
       </div>
 
-      <!-- Model Selector & Equipped ECC Skills Cartridge Bar -->
-      <div class="model-and-skills-bar">
-        <div class="model-select-row">
-          <span style="color:#9ca3af;font-family:var(--font-mono);">Model:</span>
-          <select id="inspModelSelect" class="model-dropdown" onchange="window.app.changeAgentModel(this.value)"></select>
+      <!-- Compact Model Selector Bar -->
+      <div style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:#121216;border-bottom:1px solid #23232b;">
+        <span style="color:#9ca3af;font-size:11px;font-family:var(--font-mono);flex-shrink:0;">Model:</span>
+        <select id="inspModelSelect" class="model-dropdown" style="flex:1;font-size:11px;padding:3px 6px;" onchange="window.app.changeAgentModel(this.value)"></select>
+      </div>
+
+      <!-- Optional Collapsible Advanced Tools Drawer (Hidden by Default for Clean CLI) -->
+      <div id="advancedToolsDrawer" style="display:none;background:#141418;border-bottom:1px solid #27272f;">
+        <div class="model-and-skills-bar" style="border-bottom:1px solid #23232b;padding:6px 10px;">
+          <div class="equipped-skills-row">
+            <span style="font-size:10px;color:#9ca3af;font-family:var(--font-mono);">ECC Skills:</span>
+            <div id="inspSkillsList" style="display:flex;flex-wrap:wrap;gap:4px;"></div>
+            <button class="equip-more-btn" onclick="window.app.switchStageView('kanban')">+ 311 Skills</button>
+          </div>
         </div>
-        <div class="equipped-skills-row">
-          <span style="font-size:10px;color:#9ca3af;font-family:var(--font-mono);">ECC Skills:</span>
-          <div id="inspSkillsList" style="display:flex;flex-wrap:wrap;gap:4px;"></div>
-          <button class="equip-more-btn" onclick="window.app.switchStageView('kanban')">+ 311 Skills</button>
+
+        <div class="steer-control-bar" style="padding:5px 10px;">
+          <button id="blockToolsBtn" class="sm-btn" onclick="window.app.toggleBlockTools()">block tools</button>
+          <button id="stopStepBtn" class="coral-btn" onclick="window.app.toggleStopAfterStep()">stop after step</button>
+          <button class="sm-btn" onclick="window.app.open1to1Prompt()">▶ 1:1</button>
+          <button class="sm-btn" onclick="window.app.promptSpeechBubble()">💬 bubble</button>
+          <input id="steerNoteInput" class="steer-input" type="text" placeholder="steer note..." onkeydown="if(event.key==='Enter') window.app.steerSelectedAgent()" />
+          <button class="sm-btn" onclick="window.app.steerSelectedAgent()">steer</button>
+        </div>
+
+        <div class="inspector-tabs">
+          <button class="insp-tab active" data-tab="terminal" onclick="window.app.switchInspectorTab('terminal')">&gt;_ terminal</button>
+          <button class="insp-tab" data-tab="git" onclick="window.app.switchInspectorTab('git')">&lt;&gt; git</button>
+          <button class="insp-tab" data-tab="messages" onclick="window.app.switchInspectorTab('messages')">💬 messages</button>
+          <button class="insp-tab" data-tab="traces" onclick="window.app.switchInspectorTab('traces')">📊 traces</button>
+        </div>
+
+        <div class="harness-macro-strip" style="padding:5px 10px;">
+          <div class="level-selector">
+            <button class="lvl-btn" data-lvl="off" onclick="window.app.setHarnessLevel('off')">off</button>
+            <button class="lvl-btn" data-lvl="lite" onclick="window.app.setHarnessLevel('lite')">lite</button>
+            <button class="lvl-btn active" data-lvl="full" onclick="window.app.setHarnessLevel('full')">[ full ]</button>
+            <button class="lvl-btn" data-lvl="ultra" onclick="window.app.setHarnessLevel('ultra')">ultra</button>
+          </div>
+          <div class="macro-buttons">
+            <button class="mac-btn" onclick="window.app.runMacro('copy')">Copy</button>
+            <button class="mac-btn" onclick="window.app.runMacro('review')">Review</button>
+            <button class="mac-btn" onclick="window.app.runMacro('audit')">Audit</button>
+            <button class="mac-btn" onclick="window.app.runMacro('board')">Board</button>
+            <button class="mac-btn" onclick="window.app.runMacro('compact')">Compact</button>
+          </div>
+        </div>
+
+        <div class="telemetry-strip" style="padding:4px 10px;">
+          <div><span class="tele-label">cost:</span> <span id="teleCost" class="tele-val">$0.00</span></div>
+          <div><span class="tele-label">tokens:</span> <span id="teleTokens" class="tele-val">0</span> <span id="teleTurns" style="font-size:9px;color:#71717a;">(0 turns)</span></div>
+          <div><span class="tele-label">time:</span> <span id="teleTime" class="tele-val">0s</span> <span id="teleCtxLine" style="font-size:9px;color:#71717a;"></span></div>
         </div>
       </div>
 
-      <!-- Guardrails & Steer Bar -->
-      <div class="steer-control-bar">
-        <button id="blockToolsBtn" class="sm-btn" onclick="window.app.toggleBlockTools()">block tools</button>
-        <button id="stopStepBtn" class="coral-btn" onclick="window.app.toggleStopAfterStep()">stop after this step</button>
-        <button class="sm-btn" onclick="window.app.open1to1Prompt()">▶ 1:1</button>
-        <input id="steerNoteInput" class="steer-input" type="text" placeholder="send this agent a note..." onkeydown="if(event.key==='Enter') window.app.steerSelectedAgent()" />
-        <button class="sm-btn" onclick="window.app.steerSelectedAgent()">steer</button>
-      </div>
-
-      <!-- 4 Inspector Tabs: terminal | git | messages | traces -->
-      <div class="inspector-tabs">
-        <button class="insp-tab active" data-tab="terminal" onclick="window.app.switchInspectorTab('terminal')">&gt;_ terminal</button>
-        <button class="insp-tab" data-tab="git" onclick="window.app.switchInspectorTab('git')">&lt;&gt; git</button>
-        <button class="insp-tab" data-tab="messages" onclick="window.app.switchInspectorTab('messages')">💬 messages</button>
-        <button class="insp-tab" data-tab="traces" onclick="window.app.switchInspectorTab('traces')">📊 traces</button>
-      </div>
-
-      <!-- Live PTY Subheader -->
-      <div class="pty-status-subheader">
-        <span id="inspPtyId">▪ live · pty pty-rogelio-hr-recruitment-mvvn88s6</span>
-        <div style="display:flex;gap:4px;">
+      <!-- Clean Antigravity CLI Subheader -->
+      <div class="pty-status-subheader" style="padding:4px 10px;background:#0d0d11;border-bottom:1px solid #1f1f26;">
+        <span style="color:#a3e635;font-weight:700;font-family:var(--font-mono);">&gt;_ antigravity-cli</span>
+        <span id="inspPtyId" style="color:#71717a;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">▪ live · pty</span>
+        <div style="display:flex;gap:4px;align-items:center;">
           <button class="sm-btn" style="padding:1px 5px;" onclick="window.app.adjustFontSize(-1)">-</button>
-          <span id="termFontSizeLabel" style="color:#9ca3af;">12px</span>
+          <span id="termFontSizeLabel" style="color:#9ca3af;font-size:10px;">12px</span>
           <button class="sm-btn" style="padding:1px 5px;" onclick="window.app.adjustFontSize(1)">+</button>
         </div>
       </div>
 
-      <!-- Terminal / Git / Messages / Traces Viewport -->
-      <div id="inspectorViewport" class="terminal-viewport">
-        <div class="claude-mascot-header">
-          <div class="pixel-crab">👾</div>
-          <div class="mascot-meta">
-            <div><strong id="mascotEngineTitle">HarnessAgents Runtime</strong> <span style="color:#9ca3af;">v4.0.5</span></div>
-            <div id="mascotModelLine" style="color:#a1a1aa;">Opus 5.5 / Gemini 4 Argon • 311 ECC Skills Ready</div>
-            <div id="mascotFolderLine" style="color:#71717a;">F:\.Folder Redirection\Video\SAMPLE</div>
-          </div>
+      <!-- Full-Height Antigravity CLI Terminal Viewport -->
+      <div id="inspectorViewport" class="terminal-viewport" style="flex:1;padding:10px 12px;background:#09090c;overflow-y:auto;">
+        <!-- Hidden legacy metadata targets so JS references stay safe -->
+        <div style="display:none;">
+          <span id="mascotEngineTitle"></span>
+          <span id="mascotModelLine"></span>
+          <span id="mascotFolderLine"></span>
+          <span id="queueCountLabel"></span>
         </div>
-        <div id="terminalOutputPre" class="terminal-log-lines"></div>
+        <div id="terminalOutputPre" class="terminal-log-lines" style="font-family:var(--font-mono);line-height:1.5;color:#e4e4e7;white-space:pre-wrap;word-break:break-word;"></div>
       </div>
 
-      <!-- Harness Intensity & One-Click Macros Strip -->
-      <div class="harness-macro-strip">
-        <div class="level-selector">
-          <button class="lvl-btn" data-lvl="off" onclick="window.app.setHarnessLevel('off')">off</button>
-          <button class="lvl-btn" data-lvl="lite" onclick="window.app.setHarnessLevel('lite')">lite</button>
-          <button class="lvl-btn active" data-lvl="full" onclick="window.app.setHarnessLevel('full')">[ full ]</button>
-          <button class="lvl-btn" data-lvl="ultra" onclick="window.app.setHarnessLevel('ultra')">ultra</button>
+      <!-- Clean Antigravity CLI Bottom Prompt Box -->
+      <div class="composer-section" style="padding:8px 10px;background:#101014;border-top:1px solid #27272f;">
+        <div style="display:flex;align-items:flex-end;gap:6px;background:#09090c;border:1px solid #2e2e38;border-radius:6px;padding:6px 8px;">
+          <span style="color:#a3e635;font-family:var(--font-mono);font-weight:700;font-size:13px;padding-bottom:2px;">❯</span>
+          <textarea id="promptInputBox" rows="2" style="flex:1;background:transparent;border:none;color:#f4f4f5;font-family:var(--font-mono);font-size:12px;resize:none;outline:none;line-height:1.4;" placeholder="Ask ramon to build an app (e.g. 'build a python calculator app')..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();window.app.sendPromptFromBox(false);}"></textarea>
+          <button class="send-btn" style="padding:5px 12px;font-size:11px;flex-shrink:0;" onclick="window.app.sendPromptFromBox(false)">Send ↵</button>
         </div>
-        <div class="macro-buttons">
-          <button class="mac-btn" onclick="window.app.runMacro('copy')">Copy</button>
-          <button class="mac-btn" onclick="window.app.runMacro('review')">Review</button>
-          <button class="mac-btn" onclick="window.app.runMacro('audit')">Audit</button>
-          <button class="mac-btn" onclick="window.app.runMacro('board')">Board</button>
-          <button class="mac-btn" onclick="window.app.runMacro('compact')">Compact</button>
-        </div>
-      </div>
-
-      <!-- Telemetry Bar -->
-      <div class="telemetry-strip">
-        <div>
-          <div class="tele-label">cost</div>
-          <div id="teleCost" class="tele-val">$0.00</div>
-        </div>
-        <div>
-          <div class="tele-label">tokens</div>
-          <div id="teleTokens" class="tele-val">0</div>
-          <div id="teleTurns" style="font-size:10px;color:#71717a;">0 out • 0 turns</div>
-        </div>
-        <div>
-          <div class="tele-label">agent time</div>
-          <div id="teleTime" class="tele-val">0s</div>
-        </div>
-      </div>
-
-      <!-- Context & Permissions Status -->
-      <div class="ctx-bypass-strip">
-        <div style="color:#9ca3af;">&gt; Try "fix typecheck errors" or "@ada build login modal"</div>
-        <div id="teleCtxLine" style="color:#d4d4d8;">ctx 8k/1000k (0%)</div>
-        <div class="bypass-text">&gt;&gt; bypass permissions on <span style="color:#71717a;">(shift+tab to cycle)</span></div>
-      </div>
-
-      <!-- Prompt Queue & Composer -->
-      <div class="composer-section">
-        <div class="queue-header">
-          <span id="queueCountLabel">queue (0)</span>
-          <span id="activeSkillHint" style="color:#67e8f9;">Laya &lt;1ms Auto-Skill ON</span>
-        </div>
-        <textarea id="promptInputBox" class="prompt-textarea" placeholder="Message rogelio — HR &amp; Recruitment (Enter to send, Shift+Enter newline)..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();window.app.sendPromptFromBox(false);}"></textarea>
-        <div class="composer-actions">
-          <button class="sm-btn" onclick="window.app.insertQuickPrompt()">✨ + prompts</button>
-          <button class="sm-btn" onclick="window.app.sendPromptFromBox(true)" title="Add to agent's queue without interrupting">+ queue</button>
-          <button class="sm-btn" onclick="window.app.startVoiceDictation()">🎤 voice</button>
-          <button class="send-btn" onclick="window.app.sendPromptFromBox(false)">send →</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;font-size:10px;color:#71717a;font-family:var(--font-mono);">
+          <span>Files auto-save to <b style="color:#67e8f9;cursor:pointer;" onclick="window.app.openAgentFolder()">scratch\projects\</b> • Click <b>&lt;&gt; IDE</b> or <b>📁 open</b> anytime</span>
+          <button class="sm-btn" style="padding:1px 6px;font-size:9px;" onclick="window.app.insertQuickPrompt()">✨ sample prompt</button>
         </div>
       </div>
     </aside>

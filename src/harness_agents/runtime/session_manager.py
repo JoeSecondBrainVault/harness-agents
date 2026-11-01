@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import re
 import secrets
+import shutil
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
@@ -85,16 +88,12 @@ class OfficeSessionManager:
     @staticmethod
     def _build_welcome_banner(agent: AgentProfile) -> list[str]:
         return [
-            f"● live · pty {agent.pty_id}",
-            "╭──────────────────────────────────────────────────────────────╮",
-            f"│  👾 HarnessAgents Runtime v2.0  •  {agent.name.upper():<24}│",
-            f"│  Model: {agent.model_id:<28} Provider: {agent.provider.value:<12}│",
-            f"│  Folder: {agent.workspace_path[:50]:<50} │",
-            f"│  Equipped ECC Skills: {', '.join(agent.equipped_skills)[:37]:<37} │",
-            "╰──────────────────────────────────────────────────────────────╯",
-            "> Try \"fix typecheck errors\" or dispatch a Kanban card",
-            f"ctx {agent.telemetry.context_used_tokens // 1000}k/{agent.telemetry.context_max_tokens // 1000}k (0%)",
-            f">> bypass permissions {'on' if agent.bypass_permissions else 'off'} (shift+tab to cycle)",
+            f"╭─ ⚡ Antigravity CLI • {agent.name.upper()} ({agent.model_id})",
+            f"│ 📂 Workspace: {agent.workspace_path}",
+            f"│ 🎒 Skills: {', '.join(agent.equipped_skills)}",
+            "│ 💡 Ask me to build any app (e.g. 'build a python calculator')",
+            "│    then click [<> IDE] or [📁 open] above to open the project!",
+            "╰──────────────────────────────────────────────────────────────",
         ]
 
     def subscribe(self, callback: Callable[[dict[str, object]], None]) -> None:
@@ -170,15 +169,33 @@ class OfficeSessionManager:
         recalled = self.memory.recall(clean_prompt, limit=3)
         snippets = [str(item["content"]) for item in recalled]
 
-        # 5. Assemble Harness Prompt (off | lite | full | ultra)
-        sys_prompt = self.injector.build_system_prompt(agent, memory_snippets=snippets)
+        # 5. Assemble Harness Prompt (off | lite | full | ultra) + Real File Output Format
+        sys_prompt = (
+            self.injector.build_system_prompt(agent, memory_snippets=snippets)
+            + "\n\nIMPORTANT CLI RULE: Never stop at just a plan or ask 'Do you approve this plan?'. "
+            "Whenever the user asks to build, make, create, or plan an app, script, or project, "
+            "write a brief 3-bullet plan AND immediately output the COMPLETE runnable code inside a fenced markdown "
+            "code block (e.g. ```python ... ```) in the same reply."
+        )
+
+        effective_user_prompt = clean_prompt
+        if self._extract_new_project_repo_slug(clean_prompt):
+            effective_user_prompt = (
+                f"{clean_prompt}\n\n"
+                "[SYSTEM: Do NOT ask for plan approval. Provide a concise 3-bullet plan followed immediately by "
+                "the complete, runnable source code in a fenced ```python (or appropriate language) code block.]"
+            )
 
         # 6. Execute via MultiModelRouter
         gen = await self.router.generate(
             agent=agent,
             system_prompt=sys_prompt,
-            user_prompt=clean_prompt,
+            user_prompt=effective_user_prompt,
         )
+
+        # 6b. Materialize real project files to disk if code blocks or build intent are present!
+        saved_summary = self._materialize_project_files(agent, clean_prompt, gen.text)
+        full_cli_output = gen.text + (f"\n{saved_summary}" if saved_summary else "")
 
         # 7. Update Agent Telemetry & Memory
         agent.telemetry.tokens_in += gen.tokens_in
@@ -191,7 +208,7 @@ class OfficeSessionManager:
         )
         agent.telemetry.tokens_per_sec = round(gen.tokens_out / max(0.05, gen.elapsed_sec), 1)
 
-        self.terminal_logs[agent.id].append(gen.text)
+        self.terminal_logs[agent.id].append(full_cli_output)
         self.memory.remember(agent_id=agent.id, content=f"{clean_prompt} -> {gen.speech_summary}", topic=agent.department)
         self._record_trace(
             agent.id,
@@ -199,9 +216,20 @@ class OfficeSessionManager:
             f"Model={gen.model_used} ({gen.provider_used}) +{gen.tokens_out} tok in {gen.elapsed_sec}s",
         )
 
-        # 8. If prompt starts a new project or asks to create a repo, auto-create in JoeSecondBrainVault!
+        # 8. If Ramon (Hive Lead), silently record Hive coordination on the MessageBus without cluttering CLI
+        if agent.is_hive_lead:
+            for peer_id, track in (("ada", "UI track"), ("ken", "API track")):
+                if peer_id in self.agents:
+                    self.message_bus.send_message(
+                        sender_id=agent.id,
+                        recipient_id=peer_id,
+                        content=f"[Hive Dispatch] Implement {track} for: {clean_prompt[:50]}",
+                        channel="hive",
+                    )
+
+        # 8b. If prompt explicitly asks to push/create a GitHub repo, auto-create in JoeSecondBrainVault!
         repo_slug = self._extract_new_project_repo_slug(clean_prompt)
-        if repo_slug and not agent.block_tools:
+        if repo_slug and not agent.block_tools and "github" in clean_prompt.lower():
             vis = "public" if "public" in clean_prompt.lower() else "private"
             self.create_and_push_org_repo(
                 repo_name=repo_slug,
@@ -210,36 +238,6 @@ class OfficeSessionManager:
                 visibility=vis,
                 push_to_github=True,
             )
-
-        # 9. If Ramon (Hive Lead) ran a prompt, automatically coordinate and run Ada, Ken, Mira & Sentinel
-        if agent.is_hive_lead and not is_steer:
-            self.send_1to1_message(
-                sender_id=agent.id,
-                recipient_id="ada",
-                content=f"[Hive Dispatch] Implement UI track for: {clean_prompt[:60]}",
-                channel="hive",
-            )
-            self.send_1to1_message(
-                sender_id=agent.id,
-                recipient_id="ken",
-                content=f"[Hive Dispatch] Implement API track for: {clean_prompt[:60]}",
-                channel="hive",
-            )
-            if self.auto_mode:
-                for worker_id, worker_task in [
-                    ("ada", f"Implement Frontend UI for: {clean_prompt[:70]}"),
-                    ("ken", f"Implement Backend API & DB schema for: {clean_prompt[:70]}"),
-                    ("mira", f"Run Pytest TDD suite for: {clean_prompt[:70]}"),
-                    ("sentinel", f"Run OWASP ASVS 5.0.0 & Bandit security audit for: {clean_prompt[:70]}"),
-                ]:
-                    if worker_id in self.agents:
-                        w_agent = self.agents[worker_id]
-                        w_out = self.router._synthesize_agent_execution(w_agent, worker_task)
-                        self.terminal_logs[worker_id].append(w_out)
-                        w_agent.telemetry.turns += 1
-                        w_agent.telemetry.tokens_out += 64
-                        w_agent.speech_bubble = self.router._extract_speech_bubble(w_agent, worker_task)
-                        self._record_trace(worker_id, "hive_auto_exec", worker_task)
 
         # 9. Respect stop_after_step or return to IDLE
         agent.status = AgentStatus.IDLE
@@ -250,11 +248,11 @@ class OfficeSessionManager:
             next_queued = agent.prompt_queue.pop(0)
             await self.send_prompt(agent.id, next_queued)
 
-        self._emit("agent_updated", {"agent": agent.model_dump(), "log": gen.text})
+        self._emit("agent_updated", {"agent": agent.model_dump(), "log": full_cli_output})
         return {
             "status": "ok",
             "agent": agent.model_dump(),
-            "output": gen.text,
+            "output": full_cli_output,
             "telemetry": agent.telemetry.model_dump(),
         }
 
@@ -632,17 +630,142 @@ class OfficeSessionManager:
             return explicit.group(1).lower()
 
         project_intent = re.search(
-            r"(?:start|create|build|make)\s+(?:a\s+)?(?:new\s+)?(?:project|repo|repository|app|system|website)\s+(?:for\s+|about\s+|called\s+)?([a-zA-Z0-9\s_-]{3,45})",
+            r"(?:start|create|build|make|write)\s+(?:a\s+|an\s+)?(?:new\s+)?(?:plan\s+for\s+it\s+i\s+want\s+you\s+to\s+build\s+a\s+)?(?:project|repo|repository|app|system|website|calculator|game|script|tool)?\s*(?:for\s+|about\s+|called\s+)?([a-zA-Z0-9\s_-]{3,45})",
             prompt,
             flags=re.IGNORECASE,
         )
         if project_intent:
-            raw_words = re.findall(r"[a-z0-9]+", project_intent.group(1).lower())
-            stop_words = {"a", "an", "the", "with", "using", "and", "in", "on", "to", "for", "that"}
+            raw_words = re.findall(r"[a-z0-9]+", project_intent.group(0).lower())
+            stop_words = {
+                "a", "an", "the", "with", "using", "and", "in", "on", "to", "for", "that",
+                "start", "create", "build", "make", "write", "new", "plan", "it", "i", "want", "you",
+            }
             filtered = [w for w in raw_words if w not in stop_words][:4]
             if filtered:
                 return "-".join(filtered)
         return None
+
+    def _materialize_project_files(self, agent: AgentProfile, prompt: str, llm_output: str) -> str:
+        """Extract code blocks from LLM response and save real runnable files into the project folder."""
+        if agent.block_tools:
+            return ""
+
+        code_blocks = re.findall(
+            r"(?:###\s*FILE:\s*([a-zA-Z0-9_./-]+)\s*\n)?```([a-zA-Z0-9_-]*)\n(.*?)```",
+            llm_output,
+            flags=re.DOTALL,
+        )
+        slug = self._extract_new_project_repo_slug(prompt)
+        if not code_blocks and not slug:
+            return ""
+
+        folder_slug = slug or "agent-workspace"
+        projects_base = Path("C:/Users/Legion/.gemini/antigravity/scratch/projects")
+        project_dir = (projects_base / folder_slug).resolve()
+        project_dir.mkdir(parents=True, exist_ok=True)
+
+        # Point the agent (and squad) directly to this project folder so [<> IDE] & [📁 open] open it!
+        agent.workspace_path = str(project_dir)
+        for peer_id in ("ramon", "ada", "ken", "mira", "sentinel"):
+            if peer_id in self.agents:
+                self.agents[peer_id].workspace_path = str(project_dir)
+
+        written_files: list[str] = []
+        ext_map = {
+            "python": "py",
+            "py": "py",
+            "javascript": "js",
+            "js": "js",
+            "typescript": "ts",
+            "ts": "ts",
+            "html": "html",
+            "css": "css",
+            "json": "json",
+            "bash": "sh",
+            "powershell": "ps1",
+        }
+
+        for idx, (explicit_name, lang, code_body) in enumerate(code_blocks):
+            clean_code = code_body.strip()
+            if not clean_code:
+                continue
+            if explicit_name:
+                safe_name = Path(explicit_name.strip()).name
+            else:
+                ext = ext_map.get(lang.lower().strip(), "py")
+                if "calculator" in folder_slug and idx == 0 and ext == "py":
+                    safe_name = "calculator.py"
+                elif ext == "html":
+                    safe_name = "index.html"
+                elif ext == "css":
+                    safe_name = "styles.css"
+                elif ext == "js":
+                    safe_name = "app.js"
+                else:
+                    safe_name = f"main.{ext}" if idx == 0 else f"module_{idx + 1}.{ext}"
+
+            file_path = project_dir / safe_name
+            file_path.write_text(clean_code + "\n", encoding="utf-8")
+            written_files.append(f"{safe_name} ({len(clean_code)} bytes)")
+
+        # Always write a clean README.md with the full response/plan so the folder is self-contained
+        readme_path = project_dir / "README.md"
+        clean_ansi = re.sub(r"\x1b\[[0-9;]*m", "", llm_output)
+        readme_path.write_text(
+            f"# {folder_slug}\n\n> Generated by **{agent.name}** (`{agent.model_id}`)\n\n"
+            f"## Prompt\n`{prompt}`\n\n## Agent Plan & Output\n\n{clean_ansi}\n",
+            encoding="utf-8",
+        )
+        written_files.append("README.md")
+
+        files_lines = "\n".join(f"│ ✔ Saved: \x1b[32m{f}\x1b[0m" for f in written_files)
+        return (
+            "\n\x1b[36m╭─ 📂 PROJECT SAVED TO DISK ─────────────────────────────────────────\x1b[0m\n"
+            f"│ Folder: \x1b[33m{project_dir}\x1b[0m\n"
+            f"{files_lines}\n"
+            "│ 💡 Click \x1b[36m[<> IDE]\x1b[0m above to open in Antigravity/VS Code or \x1b[36m[📁 open]\x1b[0m for File Explorer!\n"
+            "\x1b[36m╰────────────────────────────────────────────────────────────────────\x1b[0m"
+        )
+
+    def open_agent_ide(self, agent_id: str) -> dict[str, object]:
+        """Launch Antigravity (`agy`), VS Code (`code`), or Explorer at the agent's workspace path."""
+        agent = self.agents.get(agent_id)
+        if not agent:
+            raise ValueError(f"Unknown agent: {agent_id}")
+        target_dir = Path(agent.workspace_path)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # Check for Antigravity CLI (`agy`) or VS Code (`code`) on Windows
+        candidates = [
+            shutil.which("agy"),
+            shutil.which("antigravity"),
+            shutil.which("code"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Antigravity\bin\agy.cmd"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\bin\code.cmd"),
+        ]
+        ide_bin = next((c for c in candidates if c and os.path.exists(c)), None)
+        launched = "explorer"
+        if ide_bin:
+            subprocess.Popen([ide_bin, str(target_dir)], shell=False)
+            launched = Path(ide_bin).stem
+        else:
+            subprocess.Popen(["explorer.exe", str(target_dir)], shell=False)
+
+        log_msg = f"\x1b[36m[<> IDE]\x1b[0m Opened `{target_dir}` in {launched}"
+        self.terminal_logs[agent.id].append(log_msg)
+        return {"opened": True, "path": str(target_dir), "launcher": launched}
+
+    def open_agent_folder(self, agent_id: str) -> dict[str, object]:
+        """Open Windows File Explorer directly at the agent's workspace path."""
+        agent = self.agents.get(agent_id)
+        if not agent:
+            raise ValueError(f"Unknown agent: {agent_id}")
+        target_dir = Path(agent.workspace_path)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.Popen(["explorer.exe", str(target_dir)], shell=False)
+        log_msg = f"\x1b[36m[📁 OPEN]\x1b[0m Opened folder `{target_dir}` in Windows Explorer"
+        self.terminal_logs[agent.id].append(log_msg)
+        return {"opened": True, "path": str(target_dir)}
 
     def create_and_push_org_repo(
         self,

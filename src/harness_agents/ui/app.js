@@ -8,7 +8,7 @@ class HarnessOfficeApp {
   constructor() {
     this.state = null;
     this.allSkills = [];
-    this.selectedAgentId = 'rogelio';
+    this.selectedAgentId = 'ramon';
     this.activeInspectorTab = 'terminal';
     this.activeStageView = 'office';
     this.inspectorCache = {};
@@ -198,7 +198,11 @@ class HarnessOfficeApp {
     const inspPill = document.getElementById('inspStatusPill');
     inspPill.textContent = isWork ? '⚡ working' : `▪ ${agent.status}`;
     inspPill.className = `status-pill ${isWork ? 'working' : ''}`;
-    document.getElementById('inspWorkspacePath').textContent = agent.department;
+    const wpEl = document.getElementById('inspWorkspacePath');
+    if (wpEl) {
+      wpEl.textContent = `📂 ${agent.workspace_path}`;
+      wpEl.title = `Click to open ${agent.workspace_path} in Windows Explorer`;
+    }
     document.getElementById('inspPtyId').textContent = `▪ live · pty ${agent.pty_id}`;
     document.getElementById('moveAgentLabel').textContent = `MOVE ${agent.name.toUpperCase()} TO`;
     document.getElementById('moveFloorSelect').value = String(agent.floor);
@@ -851,12 +855,40 @@ class HarnessOfficeApp {
     await this.selectAgent(this.selectedAgentId);
   }
 
+  async openAgentIDE() {
+    await fetch(`/api/agents/${encodeURIComponent(this.selectedAgentId)}/open-ide`, {
+      method: 'POST',
+    });
+    await this.refreshState();
+    await this.selectAgent(this.selectedAgentId);
+  }
+
+  async openAgentFolder() {
+    await fetch(`/api/agents/${encodeURIComponent(this.selectedAgentId)}/open-folder`, {
+      method: 'POST',
+    });
+    await this.refreshState();
+    await this.selectAgent(this.selectedAgentId);
+  }
+
+  toggleAdvancedDrawer() {
+    const drawer = document.getElementById('advancedToolsDrawer');
+    const btn = document.getElementById('toggleToolsBtn');
+    if (!drawer) return;
+    const isHidden = drawer.style.display === 'none' || !drawer.style.display;
+    drawer.style.display = isHidden ? 'block' : 'none';
+    if (btn) {
+      btn.style.borderColor = isHidden ? '#a3e635' : '';
+      btn.style.color = isHidden ? '#a3e635' : '';
+    }
+  }
+
   insertQuickPrompt() {
     const samples = [
-      'Fix all TypeScript & ESLint errors and run unit tests',
-      'Audit this workspace against OWASP ASVS 5.0.0 and Bandit rules',
-      'Coordinate with @ada and @ken to build the new API endpoint',
-      'Sync session progress and update Graphify knowledge graph',
+      'Build a Python calculator app with CLI and unit tests',
+      'Build a modern HTML/CSS/JS scientific calculator web app',
+      'Build a Python Todo CLI tracker with JSON storage',
+      'Audit this workspace against OWASP ASVS 5.0.0 security rules',
     ];
     const box = document.getElementById('promptInputBox');
     box.value = samples[Math.floor(Math.random() * samples.length)];

@@ -73,6 +73,7 @@ class MultiModelRouter:
             groq_model = (
                 agent.model_id
                 if any(k in agent.model_id for k in ("llama", "qwen", "deepseek"))
+                and "/" not in agent.model_id
                 else "llama-3.3-70b-versatile"
             )
             cli_cmd_used = f"groq-cli --model {groq_model}"
@@ -85,6 +86,18 @@ class MultiModelRouter:
             )
             if live_text:
                 provider_used = "groq-lpu"
+        elif agent.provider == ProviderType.OPENROUTER and os.environ.get("OPENROUTER_API_KEY"):
+            or_model = agent.model_id if "/" in agent.model_id else "openrouter/auto"
+            cli_cmd_used = f"openrouter --model {or_model}"
+            live_text = await self._call_openai_compatible(
+                url="https://openrouter.ai/api/v1/chat/completions",
+                api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+                model=or_model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+            if live_text:
+                provider_used = "openrouter"
         elif agent.provider == ProviderType.GEMINI_PRO:
             cli_cmd_used = f"gemini --model {agent.model_id}"
             gem_bin = shutil.which("gemini")
@@ -102,7 +115,7 @@ class MultiModelRouter:
                 if live_text:
                     provider_used = "gemini-pro-api"
 
-        # 2. Automatic Failover Chain (Groq -> Local Ollama CLI -> High-Craft Tactical Agent Synthesis)
+        # 2. Automatic Failover Chain (Groq -> OpenRouter -> Local Ollama CLI -> High-Craft Synthesis)
         if not live_text and os.environ.get("GROQ_API_KEY"):
             live_text = await self._call_openai_compatible(
                 url="https://api.groq.com/openai/v1/chat/completions",
@@ -114,6 +127,18 @@ class MultiModelRouter:
             if live_text:
                 provider_used = "groq-lpu (auto-failover)"
                 cli_cmd_used = "groq-cli --model llama-3.3-70b-versatile"
+
+        if not live_text and os.environ.get("OPENROUTER_API_KEY"):
+            live_text = await self._call_openai_compatible(
+                url="https://openrouter.ai/api/v1/chat/completions",
+                api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+                model="openrouter/auto",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+            if live_text:
+                provider_used = "openrouter (auto-failover)"
+                cli_cmd_used = "openrouter --model openrouter/auto"
 
         if not live_text:
             live_text = await self._call_ollama_cli_or_api(
@@ -162,6 +187,8 @@ class MultiModelRouter:
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "HTTP-Referer": "http://127.0.0.1:8420",
+            "X-Title": "DevLabs HarnessAgents v2.0",
         }
         payload = {
             "model": model,
@@ -170,7 +197,7 @@ class MultiModelRouter:
                 {"role": "user", "content": user_prompt[:4000]},
             ],
             "temperature": 0.2,
-            "max_tokens": 600,
+            "max_tokens": 1800,
         }
         try:
             async with httpx.AsyncClient(timeout=12.0) as client:

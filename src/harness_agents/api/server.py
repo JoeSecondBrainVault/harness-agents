@@ -233,6 +233,18 @@ def create_app(manager: OfficeSessionManager | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Agent not found")
         return session_mgr.run_macro(agent_id, macro_name)
 
+    @app.post("/api/agents/{agent_id}/open-ide")
+    async def open_agent_ide_route(agent_id: str) -> dict[str, object]:
+        if agent_id not in session_mgr.agents:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return session_mgr.open_agent_ide(agent_id)
+
+    @app.post("/api/agents/{agent_id}/open-folder")
+    async def open_agent_folder_route(agent_id: str) -> dict[str, object]:
+        if agent_id not in session_mgr.agents:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return session_mgr.open_agent_folder(agent_id)
+
     @app.post("/api/messages")
     async def post_message(req: MessageRequest) -> dict[str, object]:
         return session_mgr.send_1to1_message(
