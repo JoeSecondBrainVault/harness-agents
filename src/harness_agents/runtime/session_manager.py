@@ -1171,7 +1171,8 @@ class OfficeSessionManager:
         for p in target_dir.rglob("*"):
             if not p.is_file():
                 continue
-            if any(part.startswith(".") or part in ("__pycache__", "node_modules", ".venv") for part in p.parts):
+            rel_parts = p.relative_to(target_dir).parts
+            if any((part.startswith(".") and part != ".gitignore") or part in ("__pycache__", "node_modules", ".venv") for part in rel_parts):
                 continue
             if p.suffix.lower() not in allowed_exts and p.name != ".gitignore":
                 continue
